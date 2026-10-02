@@ -1,0 +1,15 @@
+# Personal: your setup, your work and your history. Never committed.
+/app/config.json
+/app/managers.json
+/app/routines.json
+/app/data/
+/managers/
+/about-me.md
+/PROJECTS.md
+/icons/
+/inbox/
+/record/
+/log/
+
+.DS_Store
+node_modules/

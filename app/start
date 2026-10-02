@@ -1,0 +1,12 @@
+#!/bin/zsh
+# Starts HQ, or restarts it if it's already running, and opens it in the browser.
+cd "${0:A:h}"
+PORT=${HQ_PORT:-4747}
+OLD=$(lsof -ti tcp:$PORT -sTCP:LISTEN)
+if [[ -n $OLD ]]; then
+  echo "Restarting HQ…"
+  kill $OLD
+  for i in {1..20}; do lsof -ti tcp:$PORT -sTCP:LISTEN >/dev/null || break; sleep 0.25; done
+fi
+( sleep 1 && open "http://localhost:$PORT" ) &
+exec node server.js

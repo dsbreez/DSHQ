@@ -1,0 +1,73 @@
+#!/usr/bin/env node
+// hq-task: how managers hand work to background workers through the HQ app.
+//   hq-task new --manager web --title "Short title" [--folder ~/website] <<'EOF'
+//   the brief
+//   EOF
+//   hq-task list [--manager web]
+//   hq-task show <id>
+
+const PORT = process.env.HQ_PORT || 4747;
+const BASE = `http://localhost:${PORT}/api`;
+
+const [cmd, ...rest] = process.argv.slice(2);
+const flags = {};
+const positional = [];
+for (let i = 0; i < rest.length; i++) {
+  if (rest[i].startsWith('--')) flags[rest[i].slice(2)] = rest[++i];
+  else positional.push(rest[i]);
+}
+
+async function api(path, options = {}) {
+  let res;
+  try {
+    res = await fetch(`${BASE}${path}`, { ...options, headers: { 'content-type': 'application/json', 'x-hq': '1' } });
+  } catch {
+    fail(`HQ isn't running on this Mac (nothing at localhost:${PORT}).`);
+  }
+  const body = await res.json();
+  if (!res.ok) fail(body.error || `HQ said ${res.status}`);
+  return body;
+}
+
+function fail(message) {
+  console.error(`hq-task: ${message}`);
+  process.exit(1);
+}
+
+async function readStdin() {
+  if (process.stdin.isTTY) return '';
+  let data = '';
+  for await (const chunk of process.stdin) data += chunk;
+  return data;
+}
+
+const STATUS = { queued: 'queued', working: 'working', review: 'needs review', done: 'done', failed: 'failed', stopped: 'stopped', interrupted: 'interrupted' };
+
+if (cmd === 'new') {
+  const brief = (flags.brief || '') + (await readStdin());
+  if (!flags.manager) fail('Pass --manager');
+  if (!brief.trim()) fail('Pass the brief on stdin (a heredoc)');
+  const task = await api('/tasks', {
+    method: 'POST',
+    body: JSON.stringify({ manager: flags.manager, title: flags.title, folder: flags.folder, brief, from: 'manager' }),
+  });
+  const where = task.status === 'queued' ? 'Queued: another worker is busy in that folder, it starts right after.' : 'Running now.';
+  console.log(`Task #${task.id} "${task.title}" in ${task.folder}. ${where} It reports to the "Needs you" queue.`);
+} else if (cmd === 'list') {
+  const tasks = await api(`/tasks${flags.manager ? `?manager=${encodeURIComponent(flags.manager)}` : ''}`);
+  if (!tasks.length) console.log('No tasks.');
+  for (const t of tasks.slice(-30)) {
+    const extra = t.status === 'working' ? ` — ${t.activity}` : t.summary ? ` — ${t.summary.slice(0, 120)}` : '';
+    console.log(`#${t.id} [${STATUS[t.status] || t.status}] ${t.title}${extra}`);
+  }
+} else if (cmd === 'show') {
+  const id = positional[0] || flags.id;
+  if (!id) fail('Which task? hq-task show <id>');
+  const { task } = await api(`/tasks/${encodeURIComponent(id)}`);
+  console.log(`#${task.id} ${task.title}\nStatus: ${STATUS[task.status] || task.status}\nFolder: ${task.folder}\n\nBrief:\n${task.brief}\n`);
+  if (task.report) console.log(`Report:\n${task.report}`);
+  if (task.error) console.log(`Error: ${task.error}`);
+} else {
+  console.log('Usage: hq-task new --manager <id> --title "..." [--folder <path>] <<EOF brief EOF | hq-task list [--manager <id>] | hq-task show <id>');
+  process.exit(cmd ? 1 : 0);
+}

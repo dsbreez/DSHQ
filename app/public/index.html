@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>HQ</title>
+  <meta name="apple-mobile-web-app-title" content="HQ">
+  <meta name="application-name" content="HQ">
+  <meta name="theme-color" content="#F2F2F4" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#232325" media="(prefers-color-scheme: dark)">
+  <link rel="icon" href="/favicon.png" type="image/png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <div class="shell">
+    <nav class="rail" id="rail" aria-label="HQ"></nav>
+    <main class="main" id="main"></main>
+  </div>
+
+  <div class="offline" id="offline" role="status" hidden>
+    <strong>HQ isn't running.</strong> Double-click <code>start</code> in <code>~/HQ/app</code>, or run <code>~/HQ/app/start</code> in Terminal. This window reconnects by itself.
+  </div>
+
+  <dialog class="drawer" id="drawer" aria-labelledby="drawer-title"></dialog>
+  <dialog class="modal" id="task-modal" aria-label="New task"></dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

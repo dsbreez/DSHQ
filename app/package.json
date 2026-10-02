@@ -1,0 +1,7 @@
+{
+  "name": "hq",
+  "private": true,
+  "type": "module",
+  "description": "Your managers and workers, on one screen.",
+  "scripts": { "start": "node server.js" }
+}

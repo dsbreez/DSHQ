@@ -1,0 +1,24 @@
+[
+  {
+    "id": "content",
+    "name": "Content Manager",
+    "blurb": "Posts, newsletters and launch copy",
+    "icon": "pen",
+    "color": "#FF2D55",
+    "home": "~/content",
+    "folders": ["~/content", "~/website"],
+    "starters": ["What's on your desk?", "Draft this month's newsletter", "Turn our latest launch into three posts"]
+  },
+  {
+    "id": "research",
+    "name": "Research Analyst",
+    "blurb": "Markets, competitors and customers",
+    "icon": "search",
+    "color": "#5E5CE6",
+    "home": "~/research",
+    "folders": ["~/research"],
+    "starters": ["Profile our top three competitors", "Summarise last month's customer calls", "What changed in our market this week?"],
+    "blocked": [],
+    "outward": []
+  }
+]
