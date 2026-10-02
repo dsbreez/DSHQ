@@ -49,7 +49,9 @@ Then write, for each manager:
   - `icon`: one of globe, chat, chart, sparkle, pen, code, megaphone, briefcase, search, bolt, book, users, star. `color`: a hex colour; each manager gets a different one.
   - `home`: the main folder. `folders`: the main folder first, then any others.
   - `starters`: three things they'd plausibly ask it first.
-  - Optional `blocked`: tool rules the manager may never use, e.g. `"Bash(gh pr create *)"`. Optional `outward`: extra rules blocked until they approve.
+  - Optional `network`: the sites this manager's commands may reach, as bare domains like `"api.example.com"` or `"*.example.com"`. Every command runs in Claude Code's sandbox, which blocks everything else. Check the scripts in its folders for the APIs they call (`grep -rhoE "https?://[a-zA-Z0-9.-]+" <folder>`, skipping data files) and list the ones it needs to read data or prepare work. Leave it out if the manager only works on files.
+  - Optional `approvedNetwork`: sites only an approved run may reach, for the action itself, such as a deploy service. github.com is always included for approved runs. `"*"` means anywhere; only use it if they ask.
+  - Optional `blocked`: tool rules the manager may never use, e.g. `"Bash(gh pr create *)"`. Optional `outward`: extra rules blocked until they approve. These match the command text, so they're a backstop behind the sandbox.
 - `managers/<id>/ROLE.md`, modelled on `examples/managers/*/ROLE.md`: Owns, Home folder, Also uses, Skills, then Ground rules. Under 30 lines.
 - `managers/<id>/DESK.md`, modelled on `examples/managers/*/DESK.md`, with the sections in this order: Working on, Next, Waiting on <their name>, Waiting on others, Decisions, Parked, Notes. Put one or two real first steps under Next. The heading must say "Waiting on" followed by exactly the name in `config.json`.
 
@@ -69,7 +71,7 @@ If they want their photo in HQ, save it as `icons/me.png`. To use it as the Dock
 
 ## 7. Start it
 
-Tell them to run `~/HQ/app/start` (or `app/start` from this folder). It opens http://localhost:4747. In Safari, **File → Add to Dock** makes it an app. Point them to the README for how calls, workers and approvals work.
+Tell them to run `~/HQ/app/start` (or `app/start` from this folder). It opens http://localhost:4747. In Safari, **File → Add to Dock** makes it an app. Approvals only count from that window (a browser on their Mac), never from a script. Point them to the README for how calls, workers and approvals work.
 
 If HQ was already running, the same command restarts it so the new setup loads.
 

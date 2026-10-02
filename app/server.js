@@ -12,11 +12,13 @@ import { Store } from './lib/store.js';
 import { Record, monthKey, prevMonth, monthLabel } from './lib/record.js';
 import { Routines } from './lib/routines.js';
 import { parseCall, recordAnswer, parseProjects, setProjectStatus, daySummary } from './lib/dashboard.js';
+import { fromBrowser, privatePath } from './lib/safety.js';
 import * as P from './lib/prompts.js';
 
 const APP = path.dirname(fileURLToPath(import.meta.url));
 const HQ = path.dirname(APP);
 const HOME = os.homedir();
+const REAL_HOME = (() => { try { return fs.realpathSync(HOME); } catch { return HOME; } })();
 const PORT = Number(process.env.HQ_PORT || 4747);
 const HOSTS = new Set([`localhost:${PORT}`, `127.0.0.1:${PORT}`]);
 const MAX_WORKERS = 2;
@@ -40,8 +42,18 @@ const CONFIG = { name: '', aboutMe: 'about-me.md', ...readJson(path.join(APP, 'c
 const OWNER = CONFIG.name || 'the owner';
 if (Number(CONFIG.autoFreshTokens) > 0) AUTO_FRESH_TOKENS = Number(CONFIG.autoFreshTokens);
 
+// Network entries are bare domains (api.example.com, *.example.com, or * for anything). Claude Code can
+// ignore settings it can't read without a word, sandbox and all, so HQ leaves out anything else.
+const DOMAIN = /^(\*|(\*\.)?[a-z0-9-]+(\.[a-z0-9-]+)*(:\d+)?)$/i;
+const domains = (list, where) => (Array.isArray(list) ? list : []).filter(d => {
+  if (DOMAIN.test(String(d))) return true;
+  console.error(`managers.json: ignoring "${d}" in ${where}. Use a bare domain like api.example.com.`);
+  return false;
+});
+
 const MANAGERS = readJson(path.join(APP, 'managers.json'), []).map(m => ({
   ...m, homePath: expand(m.home), folderPaths: m.folders.map(expand),
+  network: domains(m.network, `${m.id}.network`), approvedNetwork: domains(m.approvedNetwork, `${m.id}.approvedNetwork`),
 }));
 const byId = Object.fromEntries(MANAGERS.map(m => [m.id, m]));
 
@@ -79,6 +91,30 @@ const OUTWARD = [
   ...(CONFIG.outwardTools || []),
 ];
 
+// The real gate for Bash: Claude Code's sandbox, enforced by macOS. Commands write only inside the run's
+// folders and reach the network only through Claude Code's proxy, which lets through HQ itself (for hq-task)
+// and the manager's own "network" domains. The run you approve also gets github.com and "approvedNetwork".
+// The OUTWARD patterns above stay as a backstop. WebFetch, WebSearch and connectors aren't Bash: the
+// prompts and the outwardTools names cover those.
+// No run may change HQ itself (its code, managers.json, config) or read its data (the private id, chats):
+// a change there would outlast the run, and widen every run after the next restart.
+function sandbox(m, unlocked = false) {
+  const allowed = [`localhost:${PORT}`, `127.0.0.1:${PORT}`, ...m.network];
+  if (unlocked) allowed.push('github.com', ...m.approvedNetwork);
+  const data = path.join(APP, 'data');
+  return {
+    permissions: { deny: [`Edit(/${APP}/**)`, `Read(/${data}/**)`] },
+    sandbox: {
+      enabled: true,
+      failIfUnavailable: true, // never fall back to running Bash unsandboxed
+      allowUnsandboxedCommands: false, // and never let a command ask to skip it
+      autoAllowBashIfSandboxed: true,
+      filesystem: { denyWrite: [APP], denyRead: [data] },
+      network: { allowedDomains: [...new Set(allowed)] },
+    },
+  };
+}
+
 // Files a review card may preview or open: deliverables inside the managers' folders and HQ.
 const ASSET_ROOTS = [...new Set([HQ, ...MANAGERS.flatMap(m => m.folderPaths)])].map(r => { try { return fs.realpathSync(r); } catch { return r; } });
 const ASSET_TYPES = {
@@ -93,15 +129,22 @@ function allowedAsset(target) {
   const abs = expand(target);
   if (!ASSET_TYPES[path.extname(abs).toLowerCase()] || !fs.existsSync(abs)) return null;
   const real = fs.realpathSync(abs);
+  if (!fs.statSync(real).isFile()) return null; // a folder named like a file could be an app in disguise
   return ASSET_ROOTS.some(root => real === root || real.startsWith(`${root}${path.sep}`)) ? real : null;
 }
 
 // ---------- live updates to the browser ----------
 
 const clients = new Set();
+// A closed tab can leave a dead connection behind: drop it instead of writing to it.
+function writeAll(msg) {
+  for (const res of clients) {
+    if (res.destroyed || res.socket?.destroyed) { clients.delete(res); continue; }
+    try { res.write(msg); } catch { clients.delete(res); }
+  }
+}
 function emit(type, data) {
-  const msg = `event: ${type}\ndata: ${JSON.stringify(data)}\n\n`;
-  for (const res of clients) res.write(msg);
+  writeAll(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
 }
 let stateTimer;
 function pushState() {
@@ -267,20 +310,28 @@ function receiveUpload(req, name) {
     const target = inboxFile(name);
     const chunks = [];
     let size = 0;
+    let failed = false;
     req.on('data', c => {
+      if (failed) return;
       size += c.length;
-      if (size > MAX_UPLOAD) { reject(httpError(413, 'That file is over 100 MB. Share its path instead.')); req.destroy(); return; }
+      if (size > MAX_UPLOAD) { failed = true; reject(httpError(413, 'That file is over 100 MB. Share its path instead.')); req.destroy(); return; }
       chunks.push(c);
     });
     req.on('end', () => {
-      fs.writeFileSync(target, Buffer.concat(chunks));
+      if (failed) return;
+      try {
+        fs.writeFileSync(target, Buffer.concat(chunks));
+      } catch (err) {
+        return reject(httpError(500, `Couldn't save that file in the inbox: ${err.message}`));
+      }
       resolve({ path: tilde(target), name: path.basename(target), kind: assetKind(target), size });
     });
-    req.on('error', reject);
+    req.on('error', err => { failed = true; reject(err); });
   });
 }
 
-// A path you paste may sit outside the folders a manager can read. Copy those into the inbox.
+// A path you paste in the chat may sit outside the folders a manager can read. Copy those into the inbox.
+// Only for your own messages, never for a manager's task brief, and never keys, tokens or hidden files.
 function bringFilesIn(text, readable) {
   const notes = [];
   const seen = new Set();
@@ -289,8 +340,9 @@ function bringFilesIn(text, readable) {
     const abs = expand(shown);
     if (seen.has(abs) || !abs.startsWith(HOME)) continue;
     seen.add(abs);
-    let stat;
-    try { stat = fs.statSync(abs); } catch { continue; }
+    let stat, real;
+    try { stat = fs.statSync(abs); real = fs.realpathSync(abs); } catch { continue; }
+    if (privatePath(abs, HOME) || privatePath(real, REAL_HOME)) continue;
     if (!stat.isFile() || stat.size > MAX_UPLOAD) continue;
     if (readable.some(dir => abs === dir || abs.startsWith(`${dir}${path.sep}`))) continue;
     const copy = inboxFile(path.basename(abs));
@@ -349,6 +401,7 @@ function pumpManager(id, retried = false) {
     allowed: ['Bash(hq-task *)'],
     // Managers never act outward: they start a worker for it, and only the run you approve is unlocked.
     disallowed: [...NEVER, ...(m.blocked || []), ...OUTWARD, ...(m.outward || [])],
+    settings: sandbox(m),
     onEvent: e => {
       if (e.type === 'system' && e.subtype === 'init') { s.sessionId = e.session_id; store.save(); return; }
       if (e.parent_tool_use_id) return;
@@ -490,7 +543,9 @@ function createTask({ manager, title, brief, folder, from }) {
   brief = String(brief || '').trim();
   if (!brief) throw httpError(400, 'Describe the task first.');
   // A brief can't carry HQ's id: a worker never mistakes a manager's words for HQ's.
-  brief = hideId(bringFilesIn(brief, [INBOX, managerDir(manager), ...m.folderPaths]));
+  // Files are only brought in for your own tasks: a manager can't use a brief to copy files out of their folder.
+  if (from !== 'manager') brief = bringFilesIn(brief, [INBOX, managerDir(manager), ...m.folderPaths]);
+  brief = hideId(brief);
   const dir = folder ? expand(folder) : m.homePath;
   if (!dir.startsWith(HOME) || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
     throw httpError(400, `Folder not found: ${folder}`);
@@ -553,6 +608,7 @@ function startWorker(task) {
     appendSystemPrompt: P.workerSystem({ manager: m, role: read(rolePath(m.id)), aboutOwner: aboutOwner() }),
     addDirs: [managerDir(m.id), ...(fs.existsSync(INBOX) ? [INBOX] : []), ...m.folderPaths.filter(f => f !== folder && fs.existsSync(f))],
     disallowed: [...NEVER, ...(m.blocked || []), ...(unlocked ? [] : [...OUTWARD, ...(m.outward || [])])],
+    settings: sandbox(m, unlocked),
     onEvent: e => {
       if (e.type === 'system' && e.subtype === 'init') { task.sessionId = e.session_id; store.save(); return; }
       if (e.parent_tool_use_id || e.type !== 'assistant') return;
@@ -794,6 +850,19 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// Choices only you make. They count only from your HQ window (a browser on this Mac), never from a script
+// a manager or worker runs, even one that copies the page's headers.
+function ownerOnly(method, area, id, action) {
+  if (method === 'GET') return false;
+  if (area === 'tasks') return !!(id && action); // approve, done, send-back, discard, retry, stop
+  if (area === 'managers') return ['message', 'fresh', 'settings', 'desk'].includes(action);
+  if (area === 'calls') return id === 'answer';
+  if (area === 'projects') return action === 'status';
+  if (area === 'review') return id === 'close';
+  if (area === 'runs') return action === 'verdict';
+  return false;
+}
+
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
@@ -840,6 +909,9 @@ const server = http.createServer(async (req, res) => {
     const parts = url.pathname.split('/').filter(Boolean);
     if (parts[0] !== 'api') return serveStatic(url.pathname, res);
     const [, area, id, action] = parts;
+    if (ownerOnly(req.method, area, id, action) && !(await fromBrowser(req, PORT))) {
+      throw httpError(403, 'Approvals only count from your HQ window.');
+    }
 
     if (area === 'state' && req.method === 'GET') return send(res, 200, snapshot());
 
@@ -888,7 +960,12 @@ const server = http.createServer(async (req, res) => {
         const manager = url.searchParams.get('manager');
         return send(res, 200, store.state.tasks.filter(t => t.status !== 'discarded' && (!manager || t.manager === manager)));
       }
-      if (!id && req.method === 'POST') return send(res, 200, createTask(await readBody(req)));
+      if (!id && req.method === 'POST') {
+        // A task is yours only when it comes from your HQ window. Anything else (hq-task) is a manager's.
+        const body = await readBody(req);
+        const from = body.from !== 'manager' && (await fromBrowser(req, PORT)) ? 'owner' : 'manager';
+        return send(res, 200, createTask({ ...body, from }));
+      }
       const task = store.task(id);
       if (!task) throw httpError(404, `No task #${id}`);
       if (!action && req.method === 'GET') return send(res, 200, { task, log: store.readLog(task.id) });
@@ -950,7 +1027,8 @@ const server = http.createServer(async (req, res) => {
         if (!allowedAsset(target)) throw httpError(403, 'HQ only opens images, PDFs and videos from your managers\' folders.');
         execFile('open', [target]);
       } else {
-        execFile('open', fs.statSync(target).isDirectory() ? [target] : ['-R', target]);
+        // Always reveal in Finder, never open: a folder can be an app (Something.app) that would launch.
+        execFile('open', ['-R', target]);
       }
       return send(res, 200, { ok: true });
     }
@@ -968,7 +1046,7 @@ try {
   if (fs.existsSync(projectsPath)) fs.watch(projectsPath, () => pushState());
 } catch {}
 
-setInterval(() => { for (const res of clients) res.write(': ping\n\n'); }, 25000);
+setInterval(() => writeAll(': ping\n\n'), 25000);
 setInterval(() => routines.tick().catch(err => console.error('Routine check failed', err)), 5 * 60000);
 setTimeout(() => routines.tick().catch(err => console.error('Routine check failed', err)), 20000);
 setInterval(() => { pruneTasks(); record.trimFeed(); }, 3600e3);
@@ -992,6 +1070,9 @@ function shutdown() {
 }
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+// One bad request or file shouldn't take HQ down with every running manager and worker: log it and carry on.
+process.on('uncaughtException', err => console.error('Unexpected error, HQ keeps running:', err));
+process.on('unhandledRejection', err => console.error('Unhandled rejection, HQ keeps running:', err));
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`HQ is running at http://localhost:${PORT}`);

@@ -4,7 +4,7 @@ A local app on top of Claude Code: managers (one ongoing conversation each, plus
 
 ## Layout
 
-- `app/server.js`: the server (Node, no dependencies). It runs Claude Code headless for managers and workers. `app/lib/`: prompts, dashboard, routines, record, cron, the Claude runner. `app/public/`: the screen (vanilla JS, no build step). `app/bin/hq-task`: how managers start workers.
+- `app/server.js`: the server (Node, no dependencies). It runs Claude Code headless for managers and workers. `app/lib/`: prompts, dashboard, routines, record, cron, the Claude runner, safety checks. Managers and workers run Bash in Claude Code's sandbox (`sandbox()` in server.js), with the network limited per manager by `network` and `approvedNetwork` in `app/managers.json`. `app/public/`: the screen (vanilla JS, no build step). `app/bin/hq-task`: how managers start workers.
 - Personal, never committed: `app/config.json` (name, profile path), `app/managers.json`, `app/routines.json`, `app/data/` (state and chats), `managers/<id>/` (ROLE.md, DESK.md, PLAYBOOK-*.md), `about-me.md`, `PROJECTS.md`, `icons/`, `inbox/`, `record/`, `log/`.
 - Shared templates: `*.example.*` files, `examples/managers/`.
 

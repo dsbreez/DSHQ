@@ -1132,17 +1132,21 @@ function openRun(runId) {
   api(`/runs/${encodeURIComponent(runId)}/opened`, { method: 'POST' }).catch(() => {});
 }
 
+// A run's link comes from outside HQ: only a plain https: address becomes a link.
+const httpsOnly = url => { try { return new URL(url).protocol === 'https:' ? String(url) : ''; } catch { return ''; } };
+
 function renderRunSheet() {
   const el = $('#run-sheet');
   const e = S.feed.find(x => x.runId === S.openRun);
   if (!el || !e) return;
   const run = S.routines.list.find(r => r.name === e.routine);
+  const link = httpsOnly(e.url);
   setHTML(el, `
     <div class="drawer-top"><span class="who">${tile('routine', 'sm')}${esc(e.routine)}</span><span class="spacer"></span><button class="close-btn" data-close-drawer aria-label="Close">${CLOSE_GLYPH}</button></div>
     <h2 id="drawer-title">${esc(new Date(e.at).toLocaleString('en-GB', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' }))}</h2>
     <p class="drawer-meta">${e.ok === false ? '<span class="status s-failed"><span class="dot"></span>Failed</span>' : '<span class="status s-done"><span class="dot"></span>Ran</span>'}${run ? `<span aria-hidden="true">·</span><span>${esc(run.schedule)}</span>` : ''}</p>
     <div class="drawer-section"><p class="run-outcome">${inline(e.text)}</p></div>
-    <div class="actions">${e.url ? `<a class="btn btn-primary" href="${esc(e.url)}" target="_blank" rel="noopener">Open the run in Claude</a>` : ''}${verdictControl(e)}</div>
+    <div class="actions">${link ? `<a class="btn btn-primary" href="${esc(link)}" target="_blank" rel="noopener">Open the run in Claude</a>` : ''}${verdictControl(e)}</div>
     <p class="footnote">HQ shows the run's last line. The full output is wherever the routine writes it: Notion, an artifact, or Slack.</p>`);
 }
 

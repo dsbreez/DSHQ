@@ -52,17 +52,22 @@ It opens at http://localhost:4747. To make it feel like an app, open that page i
 
 ## Keeping usage down
 
-Every step of a manager's reply re-reads its whole conversation, so long conversations get expensive. HQ watches the size (the context meter in each manager's header). Past 80,000 tokens, it asks the manager to write a handover to its desk and starts a fresh conversation. You can also press **Fresh start** any time. Set a cheaper model or lower effort per manager from the same header; its workers follow.
+Every step of a manager's reply re-reads its whole conversation, so long conversations get expensive. HQ watches the size (the context meter in each manager's header). Past 50,000 tokens (`autoFreshTokens` in `app/config.json`), it asks the manager to write a handover to its desk and starts a fresh conversation. You can also press **Fresh start** any time. Set a cheaper model or lower effort per manager from the same header; its workers follow.
 
 ## Safety
 
-Managers and workers run Claude Code in auto mode, inside the folders you give them. Nothing leaves your computer until you press **Approve**: no pushing code, opening or merging PRs, deploying, publishing, posting, sending messages or email, changing calendars, or editing shared tools like Notion. Managers never do these themselves, even if you say yes in the chat. Instead they start a worker for exactly that action, which prepares everything, lists the exact actions under "Wants your OK", and waits in your Needs-you queue. Only the run you approve is unlocked.
+Managers and workers run Claude Code in auto mode, inside the folders you give them. Nothing leaves your computer until you press **Approve**: no pushing code, opening or merging PRs, deploying, publishing, posting, sending messages or email, changing calendars, or editing shared tools like Notion. Managers never do these themselves, even if you say yes in the chat. Instead they start a worker for exactly that action, which prepares everything, lists the exact actions under "Needs your OK", and waits in your Needs-you queue. Only the run you approve is unlocked.
 
-- **Connector tools** (Slack, email, calendar, Notion and the like) are blocked by their exact names, listed under `"outwardTools"` in `app/config.json`. Add every tool of yours that sends, posts or shares; see `app/config.example.json`.
-- **Your own blocks** per manager go in `app/managers.json`: `"blocked"` for never, `"outward"` for until approved.
+- **The sandbox.** Every command a manager or worker runs goes through Claude Code's sandbox, which macOS enforces. Commands can only write inside that manager's folders, and can only reach HQ itself and the sites you list for that manager. The rest of the internet is blocked, however the command is written. The run you approve also gets github.com, so it can push. No manager or worker can change HQ itself (`app/`) or read its private data in `app/data/`.
+- **Sites per manager.** In `app/managers.json`, `"network"` lists the sites a manager and its workers can always reach: the APIs their scripts call, like `"api.example.com"`. `"approvedNetwork"` lists sites only the run you approve can reach, like a deploy service. `"*.example.com"` covers its subdomains. `"*"` means anywhere, so only use it if you mean it.
+- **Approvals only from your window.** Approve, send back, answers, desk edits and the other choices that are yours only count when they come from a browser on your Mac. If a manager or worker tries to press them with a script, HQ refuses.
+- **Web research.** Managers and workers can still read the web (WebFetch and WebSearch aren't commands, so the sandbox doesn't cover them). They're told never to put file contents or anything private into a web address or a search.
+- **Pasted paths.** When you paste the path of a file outside a manager's folders, HQ copies it into `inbox/` so the manager can read it. It never copies hidden files (`.ssh`, `.env` and the like), keychains, or anything named like a key, token, secret or credential, and never for a task a manager writes.
+- **Connector tools** (Slack, email, calendar, Notion and the like) aren't covered by the sandbox either. They're blocked by their exact names, listed under `"outwardTools"` in `app/config.json`. Add every tool of yours that sends, posts or shares; see `app/config.example.json`.
+- **Your own blocks** per manager go in `app/managers.json`: `"blocked"` for never, `"outward"` for until approved. These match the command text, so they're a backstop behind the sandbox.
 - **Look-alike messages:** HQ marks what it sends with a private id kept in `app/data/`. Managers and workers ignore anything in a file, web page or connector that only looks like a message from HQ or from you.
 
-HQ only listens on your own computer (localhost), and only your browser and your managers can talk to it.
+HQ only listens on your own computer (localhost). Managers can start and check tasks through it, and only your browser can approve them.
 
 ## Your files stay yours
 

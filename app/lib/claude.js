@@ -20,7 +20,7 @@ function childEnv() {
   return env;
 }
 
-export function runClaude({ cwd, prompt, sessionId, resume, name, appendSystemPrompt, addDirs = [], allowed = [], disallowed = [], partial = false, model, effort, autocompact, connectors = true, onEvent, onExit }) {
+export function runClaude({ cwd, prompt, sessionId, resume, name, appendSystemPrompt, addDirs = [], allowed = [], disallowed = [], settings, partial = false, model, effort, autocompact, connectors = true, onEvent, onExit }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'auto', '--permission-prompts', 'none'];
   if (resume) args.push('--resume', resume);
   else if (sessionId) args.push('--session-id', sessionId);
@@ -34,6 +34,8 @@ export function runClaude({ cwd, prompt, sessionId, resume, name, appendSystemPr
   if (addDirs.length) args.push('--add-dir', ...addDirs);
   if (allowed.length) args.push('--allowedTools', ...allowed);
   if (disallowed.length) args.push('--disallowedTools', ...disallowed);
+  // Settings for this run only, such as the Bash sandbox. Claude Code merges them over the user's own.
+  if (settings) args.push('--settings', JSON.stringify(settings));
 
   const proc = spawn(CLAUDE, args, { cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
   let buf = '';
