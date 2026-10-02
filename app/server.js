@@ -52,7 +52,16 @@ const managerDir = id => path.join(HQ, 'managers', id);
 const deskPath = id => path.join(managerDir(id), 'DESK.md');
 const rolePath = id => path.join(managerDir(id), 'ROLE.md');
 const projectsPath = path.join(HQ, 'PROJECTS.md');
-P.configure({ owner: OWNER, projectsPath: tilde(projectsPath) });
+// HQ's private id: it marks what HQ itself sends, so managers and workers can tell it from look-alikes in files
+// or web pages. Made once, kept in data/ (never shared), and kept off the screen and out of the record.
+const SECRET_FILE = path.join(APP, 'data', 'secret.json');
+let SECRET = readJson(SECRET_FILE, {}).id;
+if (!/^[0-9a-f]{32}$/.test(SECRET || '')) {
+  SECRET = crypto.randomBytes(16).toString('hex');
+  fs.writeFileSync(SECRET_FILE, JSON.stringify({ id: SECRET }), { mode: 0o600 });
+}
+const hideId = text => String(text ?? '').split(SECRET).join('…');
+P.configure({ owner: OWNER, projectsPath: tilde(projectsPath), secret: SECRET });
 const WAITING = P.waitingHeading();
 fs.mkdirSync(path.join(HQ, 'managers'), { recursive: true });
 const INBOX = path.join(HQ, 'inbox');
@@ -61,20 +70,13 @@ const aboutOwner = () => read(path.join(HQ, CONFIG.aboutMe)).replace(/^# .*\n+/,
 
 // Background-only tools that make no sense for a manager or worker.
 const NEVER = ['CronCreate', 'CronDelete', 'ScheduleWakeup', 'RemoteTrigger', 'Workflow', 'PushNotification'];
-// Anything that leaves the computer. Blocked for workers until you approve. Managers can add their own in managers.json ("outward").
+// Anything that leaves the computer. Always blocked for managers, and for workers until you approve.
+// Connector tools that send or share are listed in config.json ("outwardTools"); managers can add their own in managers.json ("outward").
 const OUTWARD = [
   'Bash(git push *)', 'Bash(git push)', 'Bash(git -c *push*)',
   'Bash(gh pr create *)', 'Bash(gh pr merge *)', 'Bash(gh release *)',
   'Bash(vercel *)', 'Bash(npx vercel *)', 'Bash(npm publish *)',
-  ...['slack_send_message', 'slack_schedule_message', 'slack_create_canvas', 'slack_update_canvas']
-    .map(t => `mcp__claude_ai_Slack__${t}`),
-  ...['create_event', 'update_event', 'delete_event', 'respond_to_event']
-    .map(t => `mcp__claude_ai_Google_Calendar__${t}`),
-  ...['create-pages', 'update-page', 'create-comment', 'create-database', 'update-data-source', 'create-view',
-    'update-view', 'move-pages', 'duplicate-page', 'create-folder', 'update-folder', 'send-message-to-session', 'spawn-session']
-    .map(t => `mcp__claude_ai_Notion__notion-${t}`),
-  'mcp__claude_ai_Claude_Docs__update', 'mcp__claude_ai_Claude_Docs__delete',
-  'mcp__claude_ai_Adobe_for_creativity__asset_invite_collaborators', 'mcp__claude_ai_Adobe_for_creativity__asset_share_link',
+  ...(CONFIG.outwardTools || []),
 ];
 
 // Files a review card may preview or open: deliverables inside the managers' folders and HQ.
@@ -237,12 +239,12 @@ function emitPartial(id) {
   if (partialTimers[id]) return;
   partialTimers[id] = setTimeout(() => {
     partialTimers[id] = null;
-    emit('partial', { manager: id, text: live[id].partial, activity: live[id].activity, busy: live[id].busy });
+    emit('partial', { manager: id, text: hideId(live[id].partial), activity: live[id].activity, busy: live[id].busy });
   }, 50);
 }
 
 function pushChat(id, role, text) {
-  const message = { id: crypto.randomUUID(), role, text, at: Date.now() };
+  const message = { id: crypto.randomUUID(), role, text: hideId(text), at: Date.now() };
   store.chat(id).push(message);
   store.saveChat(id);
   emit('chat', { manager: id, message });
@@ -317,9 +319,9 @@ function pumpManager(id, retried = false) {
   const context = [];
   if (s.updates.length) context.push(`Updates since your last message:\n${s.updates.map(u => `- ${u}`).join('\n')}`);
   if (!fresh && s.roleSeenHash && s.roleSeenHash !== hash(role)) context.push(`Your role file changed. It now reads:\n\n${role}`);
-  if (!fresh && (s.promptVersion || 1) < P.PROMPT_VERSION) context.push(`HQ has new instructions for you:\n\n${P.dashboardRules()}`);
+  if (!fresh && (s.promptVersion || 1) < P.PROMPT_VERSION) context.push(`HQ has new instructions for you:\n\n${P.updatesSince(s.promptVersion || 1)}`);
   if (fresh || s.deskSeenHash !== hash(desk)) context.push(`Your desk right now:\n\n${desk}`);
-  const prompt = context.length ? `<hq-context>\n${context.join('\n\n')}\n</hq-context>\n\n${text}` : text;
+  const prompt = context.length ? `<hq-context id="${SECRET}">\n${context.join('\n\n')}\n</hq-context>\n\n${text}` : text;
   const updatesSent = s.updates;
   s.updates = [];
 
@@ -345,7 +347,8 @@ function pumpManager(id, retried = false) {
     }),
     addDirs: [HQ, ...m.folderPaths.filter(f => f !== m.homePath && fs.existsSync(f))],
     allowed: ['Bash(hq-task *)'],
-    disallowed: [...NEVER, ...(m.blocked || [])],
+    // Managers never act outward: they start a worker for it, and only the run you approve is unlocked.
+    disallowed: [...NEVER, ...(m.blocked || []), ...OUTWARD, ...(m.outward || [])],
     onEvent: e => {
       if (e.type === 'system' && e.subtype === 'init') { s.sessionId = e.session_id; store.save(); return; }
       if (e.parent_tool_use_id) return;
@@ -366,11 +369,11 @@ function pumpManager(id, retried = false) {
           if (block.type === 'text' && block.text.trim()) {
             l.partial = '';
             wroteText = true;
-            lastText = block.text;
-            pushChat(id, 'manager', block.text);
+            lastText = hideId(block.text);
+            pushChat(id, 'manager', lastText);
           } else if (block.type === 'tool_use') {
             l.partial = '';
-            l.activity = describeTool(block.name, block.input);
+            l.activity = hideId(describeTool(block.name, block.input));
             pushChat(id, 'activity', l.activity);
             emitPartial(id);
             pushState();
@@ -394,7 +397,7 @@ function pumpManager(id, retried = false) {
       if (stopped) {
         pushChat(id, 'activity', 'Stopped');
       } else if (ok) {
-        if (!wroteText && result.result) { lastText = result.result; pushChat(id, 'manager', result.result); }
+        if (!wroteText && result.result) { lastText = hideId(result.result); pushChat(id, 'manager', lastText); }
         if (!freshStart && lastText) record.addEvent({ kind: 'manager', manager: id, text: oneLine(lastText) });
         const used = usageOf(result, steps);
         logUsage({ kind: 'manager', manager: id, ...used });
@@ -486,7 +489,8 @@ function createTask({ manager, title, brief, folder, from }) {
   if (!m) throw httpError(400, `There's no manager called "${manager}".`);
   brief = String(brief || '').trim();
   if (!brief) throw httpError(400, 'Describe the task first.');
-  brief = bringFilesIn(brief, [INBOX, managerDir(manager), ...m.folderPaths]);
+  // A brief can't carry HQ's id: a worker never mistakes a manager's words for HQ's.
+  brief = hideId(bringFilesIn(brief, [INBOX, managerDir(manager), ...m.folderPaths]));
   const dir = folder ? expand(folder) : m.homePath;
   if (!dir.startsWith(HOME) || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
     throw httpError(400, `Folder not found: ${folder}`);
@@ -523,7 +527,7 @@ function startWorker(task) {
   task.next = null;
   const fresh = !task.sessionId;
   const unlocked = next?.kind === 'approve';
-  const prompt = fresh ? P.workerBrief({ task, desk: read(deskPath(m.id)) }) : next?.prompt || P.CARRY_ON;
+  const prompt = fresh ? P.workerBrief({ task, desk: read(deskPath(m.id)) }) : P.fromHQ(next?.prompt || P.CARRY_ON);
 
   Object.assign(task, {
     status: 'working', activity: 'Starting', startedAt: Date.now(), updatedAt: Date.now(),
@@ -554,7 +558,7 @@ function startWorker(task) {
       if (e.parent_tool_use_id || e.type !== 'assistant') return;
       for (const block of e.message?.content || []) {
         if (block.type === 'tool_use') {
-          task.activity = describeTool(block.name, block.input);
+          task.activity = hideId(describeTool(block.name, block.input));
           task.updatedAt = Date.now();
           store.log(task.id, { kind: 'activity', text: task.activity });
           pushState();
@@ -576,7 +580,7 @@ function startWorker(task) {
         task.status = 'stopped';
         store.log(task.id, { kind: 'system', text: `Stopped by ${OWNER}` });
       } else if (result && !result.is_error) {
-        const report = result.result || lastText;
+        const report = hideId(result.result || lastText);
         Object.assign(task, { report, summary: summaryOf(report), needsOk: parseNeedsOk(report), card: parseCard(report) });
         store.log(task.id, { kind: 'report', text: report });
         if (unlocked && !task.needsOk.length) {
@@ -590,7 +594,7 @@ function startWorker(task) {
         }
       } else {
         task.status = 'failed';
-        task.error = friendlyError(result, stderr, code);
+        task.error = hideId(friendlyError(result, stderr, code));
         store.log(task.id, { kind: 'error', text: task.error });
         managerUpdate(task, `Failed: ${task.error.slice(0, 200)}`);
         record.addEvent({ kind: 'task', manager: m.id, taskId: task.id, status: 'failed', text: `Hit a problem: ${task.title}` });
@@ -850,7 +854,7 @@ const server = http.createServer(async (req, res) => {
     if (area === 'managers' && byId[id]) {
       if (action === 'chat' && req.method === 'GET') {
         const l = live[id];
-        return send(res, 200, { messages: store.chat(id).slice(-600), partial: l.partial, busy: l.busy, activity: l.activity });
+        return send(res, 200, { messages: store.chat(id).slice(-600), partial: hideId(l.partial), busy: l.busy, activity: l.activity });
       }
       if (action === 'message' && req.method === 'POST') {
         const { text } = await readBody(req);

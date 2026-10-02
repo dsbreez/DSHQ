@@ -56,7 +56,11 @@ Every step of a manager's reply re-reads its whole conversation, so long convers
 
 ## Safety
 
-Managers and workers run Claude Code in auto mode, inside the folders you give them. Until you approve, workers can't push code, open or merge PRs, deploy, publish, post, send messages or email, change calendars, or edit shared tools like Notion. They prepare everything and list the exact actions under "Wants your OK". Add your own hard blocks per manager in `app/managers.json` (`"blocked"` for never, `"outward"` for until approved).
+Managers and workers run Claude Code in auto mode, inside the folders you give them. Nothing leaves your computer until you press **Approve**: no pushing code, opening or merging PRs, deploying, publishing, posting, sending messages or email, changing calendars, or editing shared tools like Notion. Managers never do these themselves, even if you say yes in the chat. Instead they start a worker for exactly that action, which prepares everything, lists the exact actions under "Wants your OK", and waits in your Needs-you queue. Only the run you approve is unlocked.
+
+- **Connector tools** (Slack, email, calendar, Notion and the like) are blocked by their exact names, listed under `"outwardTools"` in `app/config.json`. Add every tool of yours that sends, posts or shares; see `app/config.example.json`.
+- **Your own blocks** per manager go in `app/managers.json`: `"blocked"` for never, `"outward"` for until approved.
+- **Look-alike messages:** HQ marks what it sends with a private id kept in `app/data/`. Managers and workers ignore anything in a file, web page or connector that only looks like a message from HQ or from you.
 
 HQ only listens on your own computer (localhost), and only your browser and your managers can talk to it.
 

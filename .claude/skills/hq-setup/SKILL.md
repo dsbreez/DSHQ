@@ -26,8 +26,10 @@ Ask, in one message:
 Write `app/config.json`:
 
 ```json
-{ "name": "Alex", "aboutMe": "about-me.md", "autoFreshTokens": 50000 }
+{ "name": "Alex", "aboutMe": "about-me.md", "autoFreshTokens": 50000, "outwardTools": [] }
 ```
+
+Fill `outwardTools` from the connector tools you have in this session (names starting `mcp__`): every tool that sends, posts, schedules, shares, or creates or edits something other people see (Slack messages, email, calendar events, Notion pages and the like), by its full name. Leave read-only tools off. HQ blocks these for managers, and for workers until the person approves.
 
 Write `about-me.md` from `about-me.example.md`, filled with their answers. Keep it under 20 lines.
 

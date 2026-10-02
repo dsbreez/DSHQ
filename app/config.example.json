@@ -1,5 +1,6 @@
 {
   "name": "Alex",
   "aboutMe": "about-me.md",
-  "autoFreshTokens": 50000
+  "autoFreshTokens": 50000,
+  "outwardTools": ["mcp__claude_ai_Acme_Mail__send_email", "mcp__claude_ai_Acme_Mail__share_folder"]
 }
