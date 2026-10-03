@@ -578,6 +578,12 @@ function createTask({ manager, title, brief, folder, from }) {
   if (!dir.startsWith(HOME) || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
     throw httpError(400, `Folder not found: ${folder}`);
   }
+  // A worker only ever runs inside its manager's own folders (a router's are the whole team's).
+  const real = fs.realpathSync(dir);
+  const allowed = foldersOf(m).filter(f => fs.existsSync(f)).map(f => fs.realpathSync(f));
+  if (!allowed.some(f => real === f || real.startsWith(`${f}${path.sep}`))) {
+    throw httpError(400, `${m.name} can only start work in its own folders: ${folderList(m).join(', ')}.`);
+  }
   const task = {
     id: store.state.nextTaskId++, manager, title: String(title || '').trim() || deriveTitle(brief), brief,
     folder: tilde(dir), from: from === 'manager' ? 'manager' : 'owner', status: 'queued',
