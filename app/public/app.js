@@ -6,7 +6,8 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': 
 const S = {
   loaded: false, version: 0, managers: [], tasks: [], feed: [], upcoming: [], routines: { list: [] }, month: {},
   calls: [], projects: [], summary: '', answered: new Map(), replying: null, projectDone: new Set(), unclearOpen: false, approvingWith: null,
-  chats: {}, partial: {}, live: {},
+  chats: {}, partial: {}, live: {}, chipsSent: {},
+  proposals: [], updates: { for: '', weeks: [] }, updatesWeek: 0,
   view: null, openTask: null, taskLog: { id: null, entries: [], fetchedFor: 0 },
   deskEditing: false, earlierOpen: false, openRun: null, openSteps: new Set(),
 };
@@ -213,8 +214,10 @@ const GLYPHS = {
   book: '<path d="M5 5.5A1.5 1.5 0 0 1 6.5 4H18v14H6.5A1.5 1.5 0 0 0 5 19.5z"/><path d="M5 19.5A1.5 1.5 0 0 0 6.5 21H18"/>',
   users: '<circle cx="9" cy="9" r="3"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 6.5a3 3 0 0 1 0 5.5M17.5 19a5.5 5.5 0 0 0-2.5-4.6"/>',
   star: '<path d="M12 4l2.4 5 5.4.6-4 3.7 1.1 5.4L12 16l-4.9 2.7 1.1-5.4-4-3.7 5.4-.6z"/>',
+  film: '<rect x="4" y="5.5" width="16" height="13" rx="3"/><path d="M10.5 9.5v5l4-2.5z"/>',
+  updates: '<path d="M9.5 7.5h9M9.5 12h9M9.5 16.5h6"/><path d="M5.5 7.5h.01M5.5 12h.01M5.5 16.5h.01"/>',
 };
-const TINTS = { home: '#0A7AFF', routine: '#8E8E93', project: '#FF9F0A' };
+const TINTS = { home: '#0A7AFF', routine: '#8E8E93', project: '#FF9F0A', updates: '#34C759' };
 function tile(key, size = '', hue = 250, letter = '', color = '') {
   const glyph = GLYPHS[key];
   const tint = color || TINTS[key] || `oklch(0.6 0.14 ${hue})`;
@@ -232,6 +235,7 @@ const deskAsks = (id = null) => S.managers
   .filter(m => !id || m.id === id)
   .flatMap(m => (m.desk.sections[S.waitingHeading] || m.desk.sections['Waiting on you'] || []).map(text => ({ manager: m, text })));
 const needsCount = (id = null) => (id ? tasksOf(id) : S.tasks).filter(t => NEEDS.has(t.status)).length
+  + (S.proposals || []).filter(p => !id || p.from === id).length
   + (S.version ? S.calls.filter(c => (!id || c.manager === id) && !S.answered.has(`${c.manager}|${c.raw}`)).length : deskAsks(id).length);
 const inProgress = () => S.tasks.filter(t => t.status === 'working' || t.status === 'queued').sort((a, b) => a.createdAt - b.createdAt);
 
@@ -244,6 +248,10 @@ function problemText(t) {
   return 'You stopped this one.';
 }
 
+// A finished task can go into the week's updates, once.
+const filedTask = t => (S.updates.weeks || []).some(w => w.entries.some(e => e.taskId === t.id));
+const updateButton = t => (filedTask(t) ? '<span class="filed">In week updates</span>' : `<button class="btn-plain" data-add-update="${t.id}">Add to week updates</button>`);
+
 function taskActions(t, where) {
   const id = t.id;
   const onCard = where === 'card';
@@ -253,8 +261,8 @@ function taskActions(t, where) {
     case 'review': {
       const withContext = `<button class="btn" data-approve-context="${id}">Approve with context</button>`;
       return t.needsOk?.length
-        ? `<button class="btn btn-primary" data-act="approve" data-id="${id}">Approve</button>${withContext}${sendBack}${onCard ? report : `<button class="btn-plain" data-act="done" data-id="${id}">Done, skip those</button>`}`
-        : `<button class="btn btn-primary" data-act="done" data-id="${id}">Approve</button>${withContext}${sendBack}${report}`;
+        ? `<button class="btn btn-primary" data-act="approve" data-id="${id}">Approve</button>${withContext}${sendBack}${onCard ? report : `<button class="btn-plain" data-act="done" data-id="${id}">Done, skip those</button>`}${updateButton(t)}`
+        : `<button class="btn btn-primary" data-act="done" data-id="${id}">Approve</button>${withContext}${sendBack}${report}${updateButton(t)}`;
     }
     case 'failed': case 'interrupted': case 'stopped': {
       const label = { failed: 'Try again', interrupted: 'Carry on', stopped: 'Start again' }[t.status];
@@ -263,7 +271,7 @@ function taskActions(t, where) {
     case 'working': case 'queued':
       return `<button class="btn" data-act="stop" data-id="${id}">Stop</button>`;
     case 'done':
-      return onCard ? '' : '<button class="btn" data-sendback-open>Reopen with a note</button>';
+      return onCard ? '' : `<button class="btn" data-sendback-open>Reopen with a note</button>${updateButton(t)}`;
     default: return '';
   }
 }
@@ -365,11 +373,14 @@ function renderRail() {
   const routineSub = r.syncing ? 'Checking…' : r.lastError ? 'Last check failed' : ranToday ? `${ranToday} ran today` : `${S.upcoming.length} still to run today`;
   const me = S.owner || {};
   const initials = (me.name || 'You').split(/\s+/).map(w => w[0]).join('').slice(0, 2).toUpperCase();
+  const filed = S.updates.weeks?.[0]?.entries.length || 0;
   setHTML($('#rail'), `<div class="me">${me.photo ? '<img class="me-photo" src="/me.png" alt="">' : `<span class="me-photo me-initials" aria-hidden="true">${esc(initials)}</span>`}<span class="me-text"><span class="me-name">${esc(me.name || 'You')}</span><span class="me-sub">HQ</span></span></div>${navItem({
     href: '#/', current: S.view === 'home', icon: tile('home'), name: 'Home',
     sub: n ? `${n} need${n === 1 ? 's' : ''} you` : 'All caught up', badge: n,
   })}${navItem({
     href: '#/routines', current: S.view === 'routines', icon: tile('routine'), name: 'Routines', sub: routineSub, live: r.syncing,
+  })}${navItem({
+    href: '#/updates', current: S.view === 'updates', icon: tile('updates'), name: 'Week Updates', sub: filed ? `${filed} this week` : 'None yet this week',
   })}<p class="nav-group">Managers</p>${managers}`);
 }
 
@@ -535,6 +546,40 @@ function taskCard(t) {
   </article>`;
 }
 
+// A new manager a manager proposed: what it owns, its folders and its role, for the owner to approve or discard.
+function proposalCard(p) {
+  const from = mgr(p.from);
+  const role = String(p.role || '').replace(/^#\s.*\n+/, '');
+  const owns = role.match(/\*\*Owns:\*\*\s*(.+)/)?.[1] || p.blurb;
+  return `<article class="task-card card proposal-card">
+    <div class="card-meta"><span class="who">${from ? `${avatar(from, 'sm')}${esc(from.name)}` : 'HQ'}</span><span class="spacer"></span><span>${ago(p.at)}</span></div>
+    <h3 class="proposal-name">${tile(p.icon, '', 250, p.name[0], p.color)}<span>New manager: ${esc(p.name)}</span></h3>
+    <p class="summary">${esc(p.blurb)}</p>
+    <dl class="proposal-facts">
+      <dt>Owns</dt><dd>${inline(owns)}</dd>
+      <dt>Folders</dt><dd>${p.folders.map(f => pathBtn(f)).join('')}</dd>
+      ${p.handoff ? `<dt>First job</dt><dd>${esc(p.handoff.title)}</dd>` : ''}
+    </dl>
+    <div class="role-preview md" aria-label="Its role">${md(role)}</div>
+    <div class="actions"><button class="btn btn-primary" data-proposal="approve" data-id="${esc(p.id)}">Approve</button><button class="btn-plain destructive" data-proposal="discard" data-id="${esc(p.id)}">Discard</button></div>
+  </article>`;
+}
+
+async function proposalAction(btn) {
+  const { proposal: action, id } = btn.dataset;
+  const p = (S.proposals || []).find(x => x.id === id);
+  if (!p) return;
+  if (action === 'discard' && !confirm(`Discard ${p.name}? ${mgr(p.from)?.name || 'Its manager'} hears that you said no.`)) return;
+  btn.disabled = true;
+  try {
+    await api(`/proposals/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: {} });
+    toast(action === 'approve' ? `${p.name} is on your team. It's in the sidebar.` : 'Discarded.');
+  } catch (ex) {
+    toast(ex.message);
+    btn.disabled = false;
+  }
+}
+
 function line({ time = '', icon, name = '', text, trailing = '', attrs = '', cls = '' }) {
   const clickable = attrs ? ' is-clickable' : '';
   return `<li class="group-row feed-row${clickable}${cls ? ` ${cls}` : ''}" ${attrs}${attrs ? ' tabindex="0"' : ''}>
@@ -656,6 +701,7 @@ function renderHome() {
   if (!$('#greeting')) return;
   const calls = openCalls();
   const review = needsYou();
+  const proposals = S.proposals || [];
   $('#today').textContent = new Date().toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
   setHTML($('#greeting'), S.owner?.name ? `${greeting()}, ${esc(S.owner.name)}.` : `${greeting()}.`);
   setHTML($('#day-summary'), esc(S.summary || (calls.length + review.length
@@ -680,7 +726,7 @@ function renderHome() {
       <ul class="calls card">${calls.map(callRow).join('')}</ul>` : '');
   }
 
-  setHTML($('#review'), review.length ? `${sectionHead('To Review', review.length)}<div class="stack">${review.map(taskCard).join('')}</div>` : '');
+  setHTML($('#review'), review.length || proposals.length ? `${sectionHead('To Review', review.length + proposals.length)}<div class="stack">${proposals.map(proposalCard).join('')}${review.map(taskCard).join('')}</div>` : '');
 
   const busy = S.managers.filter(m => (S.live[m.id] || {}).busy);
   const working = inProgress();
@@ -776,6 +822,122 @@ function renderRoutines() {
     </ul>`);
 }
 
+// ---------- week updates ----------
+
+function mountUpdates() {
+  $('#main').innerHTML = `
+    <div class="page narrow dashboard">
+      <p class="date" id="updates-sub"></p>
+      <h1 class="large-title">Week Updates</h1>
+      <div class="updates-bar" id="updates-bar"></div>
+      <section class="section" id="updates-list" aria-label="This week's entries"></section>
+    </div>`;
+}
+
+const shownWeek = () => S.updates.weeks?.[S.updatesWeek] || S.updates.weeks?.[0];
+const findUpdate = id => (S.updates.weeks || []).flatMap(w => w.entries).find(e => e.id === id);
+
+function updateLinks(e) {
+  return (e.links || []).map(l => {
+    if (isPath(l)) return pathBtn(l);
+    const url = httpsOnly(l);
+    if (!url) return '';
+    let label = url;
+    try { const u = new URL(url); label = `${u.hostname.replace(/^www\./, '')}${u.pathname.length > 1 ? u.pathname : ''}`; } catch {}
+    return `<a href="${esc(url)}" target="_blank" rel="noopener" title="${esc(url)}">${esc(label.length > 48 ? `${label.slice(0, 47)}…` : label)}</a>`;
+  }).join('');
+}
+
+function renderUpdates() {
+  const week = shownWeek();
+  if (!$('#updates-list') || !week) return;
+  const router = S.managers.find(m => m.router);
+  const empty = !week.entries.length;
+  setHTML($('#updates-sub'), esc(week.label));
+  setHTML($('#updates-bar'), `<div class="segmented" role="radiogroup" aria-label="Week">${S.updates.weeks.map((w, i) => `<button type="button" class="segment" role="radio" aria-checked="${i === S.updatesWeek}" data-week="${i}">${i ? 'Last week' : 'This week'}</button>`).join('')}</div>
+    <span class="spacer"></span>
+    <button class="btn" data-copy="${esc(week.markdown)}"${empty ? ' disabled' : ''}>Copy as update</button>
+    ${router ? `<button class="btn btn-primary" data-draft-update${empty ? ' disabled' : ''}>${S.updates.for ? `Draft update for ${esc(S.updates.for)}` : `Ask ${esc(router.name)} to draft`}</button>` : ''}`);
+  if (empty) {
+    setHTML($('#updates-list'), `<div class="empty">Nothing filed ${S.updatesWeek ? 'last' : 'this'} week${S.updatesWeek ? '' : ' yet'}. Tell any manager <strong>“send it to week updates”</strong> when something's done, or use <strong>Add to week updates</strong> on a finished task.</div>`);
+    return;
+  }
+  const groups = [];
+  for (const e of week.entries) {
+    let g = groups.find(x => x.manager === e.manager);
+    if (!g) groups.push(g = { manager: e.manager, entries: [] });
+    g.entries.push(e);
+  }
+  setHTML($('#updates-list'), groups.map(g => {
+    const m = mgr(g.manager);
+    return `<div class="update-group">
+      <p class="update-who">${m ? avatar(m, 'sm') : ''}${esc(m?.name || g.manager)}</p>
+      <ul class="group">${g.entries.map(e => `<li class="group-row update-row">
+        <div class="row-main">
+          <div class="update-title">${esc(e.title)}</div>
+          ${e.summary ? `<p class="update-summary">${inline(e.summary)}</p>` : ''}
+          ${e.links?.length ? `<div class="update-links">${updateLinks(e)}</div>` : ''}
+        </div>
+        <span class="update-actions"><button class="btn-plain" data-update-edit="${esc(e.id)}">Edit</button><button class="btn-plain destructive" data-update-delete="${esc(e.id)}">Delete</button></span>
+      </li>`).join('')}</ul>
+    </div>`;
+  }).join(''));
+}
+
+// Add a finished task to the week's updates, or edit an entry. Prefilled from the task's title and summary.
+function openUpdateForm({ entry = null, task = null }) {
+  const dialog = $('#task-modal');
+  dialog.innerHTML = `<form class="composer update-form" novalidate>
+    <div class="composer-top"><h2 class="composer-title">${entry ? 'Edit week update' : 'Add to week updates'}</h2></div>
+    <input class="field" name="title" maxlength="120" aria-label="Title" placeholder="The outcome, in a few words" autocomplete="off">
+    <textarea name="summary" rows="3" aria-label="Summary" placeholder="One line that leads with the outcome. At most two more lines of detail."></textarea>
+    <textarea name="links" class="links" rows="2" aria-label="Links" placeholder="Links or file paths, one per line (optional)"></textarea>
+    <p class="form-error" role="alert"></p>
+    <div class="composer-foot"><span class="spacer"></span><button class="btn-plain" type="button" data-update-cancel>Cancel</button><button class="btn btn-primary" type="submit">${entry ? 'Save' : 'Add'}</button></div>
+  </form>`;
+  const form = $('form', dialog);
+  const f = form.elements;
+  f.title.value = entry?.title || task?.title || '';
+  f.summary.value = entry?.summary || task?.summary || '';
+  f.links.value = (entry ? entry.links : (task?.card?.assets || []).filter(a => a.exists).map(a => a.path)).join('\n');
+  $('[data-update-cancel]', form).addEventListener('click', () => dialog.close());
+  form.addEventListener('submit', async e => {
+    e.preventDefault();
+    const btn = $('[type=submit]', form);
+    btn.disabled = true;
+    const body = { title: f.title.value, summary: f.summary.value, links: f.links.value.split('\n').map(l => l.trim()).filter(Boolean) };
+    try {
+      if (entry) await api(`/updates/${encodeURIComponent(entry.id)}`, { method: 'PUT', body });
+      else await api('/updates', { method: 'POST', body: { ...body, manager: task?.manager, task: task?.id } });
+      dialog.close();
+      toast(entry ? 'Saved.' : 'Added to this week\'s updates.');
+    } catch (ex) {
+      $('.form-error', form).textContent = /not found/i.test(ex.message) && !entry ? 'Restart HQ to switch on week updates.' : ex.message;
+      btn.disabled = false;
+    }
+  });
+  dialog.showModal();
+  f.title.focus();
+}
+
+async function deleteUpdate(id) {
+  const e = findUpdate(id);
+  if (!e || !confirm(`Delete "${e.title}" from the week's updates?`)) return;
+  try { await api(`/updates/${encodeURIComponent(id)}`, { method: 'DELETE' }); toast('Deleted.'); } catch (ex) { toast(ex.message); }
+}
+
+// The router (General) writes the polished version from the week's file, in its own chat.
+async function draftUpdate() {
+  const week = shownWeek();
+  const router = S.managers.find(m => m.router);
+  if (!week || !router) return;
+  const text = `Draft my weekly update${S.updates.for ? ` for ${S.updates.for}` : ''} from ${week.path} (the week of ${week.label}). Short and polished, ready to paste: grouped by area, outcome first, numbers only if they're real, no internal jargon.`;
+  try {
+    await api(`/managers/${router.id}/message`, { method: 'POST', body: { text } });
+    location.hash = `#/m/${router.id}`;
+  } catch (ex) { toast(ex.message); }
+}
+
 // ---------- manager ----------
 
 function mountManager(id) {
@@ -860,6 +1022,9 @@ function mountManager(id) {
   $('#history').addEventListener('click', e => {
     const starter = e.target.closest('[data-starter]');
     if (starter) send(starter.dataset.starter);
+    // A tap on an answer under the manager's last message sends it as your reply.
+    const option = e.target.closest('[data-chat-option]');
+    if (option) { S.chipsSent[id] = option.dataset.msg; renderHistory(); send(option.dataset.chatOption); }
   });
   $('#chat-stop').addEventListener('click', () => api(`/managers/${id}/stop`, { method: 'POST' }).catch(ex => toast(ex.message)));
 
@@ -904,7 +1069,9 @@ function emptyThread(m) {
   return `<div class="thread-empty">
     ${avatar(m, 'xl')}
     <h2>${esc(m.name)}</h2>
-    <p>One conversation that never resets. It keeps its desk up to date, so you can pick up anywhere. Bigger jobs go to workers and come back under Needs You.</p>
+    <p>${m.router
+    ? 'Ask anything. It answers and does quick things itself. For bigger work it asks who should take it: the right manager, an open task, a new manager, or itself.'
+    : 'One conversation that never resets. It keeps its desk up to date, so you can pick up anywhere. Bigger jobs go to workers and come back under Needs You.'}</p>
     <div class="starters">${(m.starters || []).map(s => `<button class="starter" data-starter="${esc(s)}">${esc(s)}</button>`).join('')}</div>
   </div>`;
 }
@@ -922,6 +1089,10 @@ function renderHistory(forceBottom) {
   let html = '';
   let steps = [];
   let lastAt = 0;
+  // Answers in brackets at the end of the manager's last message become chips, until you reply.
+  const last = messages.findLastIndex(x => x.role === 'manager');
+  const replied = last < 0 || messages.slice(last + 1).some(x => x.role === 'you') || S.chipsSent[id] === messages[last].id;
+  const chips = replied ? [] : replyOptions(messages[last].text);
   const flushSteps = () => {
     if (!steps.length) return;
     const key = steps[0].id;
@@ -929,19 +1100,44 @@ function renderHistory(forceBottom) {
     html += `<details class="steps disclosure" data-key="${key}"${S.openSteps.has(key) ? ' open' : ''}><summary>${label}</summary>${steps.length > 1 ? `<ol>${steps.map(s => `<li>${esc(s.text)}</li>`).join('')}</ol>` : ''}</details>`;
     steps = [];
   };
-  for (const msg of messages) {
+  for (const [i, msg] of messages.entries()) {
     if (msg.role === 'activity') { steps.push(msg); continue; }
     flushSteps();
     if (msg.at - lastAt > 3 * 3600e3) html += `<p class="msg-time">${dayTime(msg.at)}</p>`;
     lastAt = msg.at;
     if (msg.role === 'you') html += youMessage(msg.text);
-    else if (msg.role === 'manager') html += `<div class="msg-mgr md">${mdCached(msg.id, msg.text)}</div>`;
+    else if (msg.role === 'manager') {
+      html += `<div class="msg-mgr md">${mdCached(msg.id, msg.text)}</div>`;
+      if (i === last && chips.length) html += `<div class="reply-chips">${chips.map((o, n) => `<button class="chip${n === 0 ? ' is-primary' : ''}" data-chat-option="${esc(o)}" data-msg="${esc(msg.id)}">${esc(o)}</button>`).join('')}</div>`;
+    } else if (msg.role === 'handoff') html += handoffMessage(msg);
+    else if (msg.role === 'note') html += `<p class="msg-note">${esc(msg.text)}</p>`;
     else if (msg.role === 'error') html += `<div class="msg-error">${esc(msg.text)}</div>`;
     else if (msg.role === 'divider') html += `<p class="msg-divider">${esc(msg.text)}</p>`;
   }
   flushSteps();
   setHTML($('#history'), html);
   if (forceBottom || nearBottom) thread.scrollTop = thread.scrollHeight;
+}
+
+// The last line of a reply can end in its answers, like a desk call: "Who should take it? [Web Designer / You do it]".
+// A small copy of parseCall in lib/dashboard.js: only explicit brackets count, never a guess.
+function replyOptions(text) {
+  const lastLine = String(text || '').trim().split('\n').pop().trim();
+  const tag = lastLine.match(/\[([^[\]]+)\][\s*_`.]*$/);
+  if (!tag) return [];
+  const options = tag[1].split('/').map(o => o.trim()).filter(Boolean).slice(0, 4);
+  if (options.length === 1 && /^(reply|x|\d+)$/i.test(options[0])) return [];
+  return options;
+}
+
+// Work handed over from another manager: who from, the title, and the brief folded away.
+function handoffMessage(msg) {
+  const from = mgr(msg.from);
+  return `<div class="msg-handoff" style="--handoff:${esc(from?.color || 'var(--accent)')}">
+    <div class="handoff-head">${from ? avatar(from, 'xs') : ''}<span>Handed over from ${esc(msg.fromName || from?.name || 'another manager')}</span></div>
+    <p class="handoff-title">${esc(msg.title || 'New work')}</p>
+    <details class="disclosure handoff-brief" data-key="${esc(msg.id)}"${S.openSteps.has(msg.id) ? ' open' : ''}><summary>Brief</summary><div class="md">${mdCached(msg.id, msg.text)}</div></details>
+  </div>`;
 }
 
 function renderLive() {
@@ -987,7 +1183,8 @@ function renderManager() {
   const m = mgr(S.view);
   if (!m || !$('#mgr-sub')) return;
   setHTML($('#mgr-controls'), controlsHTML(m));
-  setHTML($('#mgr-sub'), `<span>${esc(m.blurb)}</span><span aria-hidden="true">·</span>${m.folders.map(f => pathBtn(f)).join('<span aria-hidden="true">·</span>')}`);
+  const where = m.router ? `${pathBtn(m.home)}<span>and every manager's folders</span>` : m.folders.map(f => pathBtn(f)).join('<span aria-hidden="true">·</span>');
+  setHTML($('#mgr-sub'), `<span>${esc(m.blurb)}</span><span aria-hidden="true">·</span>${where}`);
   if (!S.deskEditing) {
     const desk = md(deskForDisplay(m.desk.text));
     setHTML($('#desk-body'), desk ? `<div class="md desk-md">${desk}</div>` : '<p class="inspector-note">The desk is empty.</p>');
@@ -1255,6 +1452,12 @@ document.addEventListener('click', e => {
   if ((el = hit('[data-close-month]'))) { closeMonth(el.dataset.closeMonth); return; }
   if (hit('[data-sync]')) { api('/routines/sync', { method: 'POST' }).then(() => toast('Checking your routines. This takes about a minute.')).catch(ex => toast(ex.message)); return; }
   if ((el = hit('[data-fresh]'))) { api(`/managers/${el.dataset.fresh}/fresh`, { method: 'POST' }).then(() => toast('Writing a handover to the desk, then starting fresh.')).catch(ex => toast(ex.message)); return; }
+  if ((el = hit('[data-proposal]'))) { proposalAction(el); return; }
+  if ((el = hit('[data-add-update]'))) { const t = S.tasks.find(x => x.id === Number(el.dataset.addUpdate)); if (t) openUpdateForm({ task: t }); return; }
+  if ((el = hit('[data-update-edit]'))) { const u = findUpdate(el.dataset.updateEdit); if (u) openUpdateForm({ entry: u }); return; }
+  if ((el = hit('[data-update-delete]'))) { deleteUpdate(el.dataset.updateDelete); return; }
+  if ((el = hit('[data-week]'))) { S.updatesWeek = Number(el.dataset.week); renderUpdates(); return; }
+  if (hit('[data-draft-update]')) { draftUpdate(); return; }
   if ((el = hit('[data-open]'))) { openTask(Number(el.dataset.open), el.hasAttribute('data-sendback')); return; }
   if ((el = hit('[data-act]'))) { runAction(el); return; }
   if ((el = hit('[data-path]'))) { api('/reveal', { method: 'POST', body: { path: el.dataset.path } }).catch(ex => toast(ex.message)); return; }
@@ -1322,7 +1525,7 @@ document.addEventListener('toggle', e => {
   const el = e.target;
   if (el.id === 'earlier-fold') S.earlierOpen = el.open;
   if (el.id === 'unclear-fold') S.unclearOpen = el.open;
-  if (el.classList?.contains('steps')) {
+  if (el.classList?.contains('steps') || el.classList?.contains('handoff-brief')) {
     if (el.open) S.openSteps.add(el.dataset.key); else S.openSteps.delete(el.dataset.key);
   }
 }, true);
@@ -1342,11 +1545,11 @@ $('#drawer').addEventListener('close', () => { S.openTask = null; S.openRun = nu
 
 function route() {
   const match = location.hash.match(/^#\/m\/([\w-]+)/);
-  const view = match && mgr(match[1]) ? match[1] : location.hash.startsWith('#/routines') ? 'routines' : 'home';
+  const view = match && mgr(match[1]) ? match[1] : location.hash.startsWith('#/routines') ? 'routines' : location.hash.startsWith('#/updates') ? 'updates' : 'home';
   if (view !== S.view) {
     S.view = view;
     S.deskEditing = false;
-    if (view === 'home') mountHome(); else if (view === 'routines') mountRoutines(); else mountManager(view);
+    if (view === 'home') mountHome(); else if (view === 'routines') mountRoutines(); else if (view === 'updates') mountUpdates(); else mountManager(view);
     $('#main').scrollTop = 0;
     window.scrollTo(0, 0);
   }
@@ -1356,7 +1559,7 @@ function route() {
 function render() {
   if (!S.loaded) return;
   renderRail();
-  if (S.view === 'home') renderHome(); else if (S.view === 'routines') renderRoutines(); else renderManager();
+  if (S.view === 'home') renderHome(); else if (S.view === 'routines') renderRoutines(); else if (S.view === 'updates') renderUpdates(); else renderManager();
   if (S.openTask) renderDrawer();
   if (S.openRun) renderRunSheet();
   const n = needsCount();
@@ -1372,6 +1575,7 @@ function connect() {
       version: s.version || 0, managers: s.managers, tasks: s.tasks, feed: s.feed || [], upcoming: s.upcoming || [],
       routines: s.routines || { list: [] }, month: s.month || {}, calls: s.calls || [], projects: s.projects || [], summary: s.summary || '',
       owner: s.owner || { name: '' }, waitingHeading: s.waitingHeading || 'Waiting on you',
+      proposals: s.proposals || [], updates: s.updates || { for: '', weeks: [] },
     });
     for (const [key, a] of S.answered) if (a.leaving === 'gone' && !S.calls.some(c => `${c.manager}|${c.raw}` === key)) S.answered.delete(key);
     for (const m of s.managers) S.live[m.id] = { busy: m.busy, activity: m.activity };

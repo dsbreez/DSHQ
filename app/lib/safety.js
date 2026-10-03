@@ -77,3 +77,18 @@ export function privatePath(abs, home) {
   return parts.some(p => p.startsWith('.')) || /^library\/keychains(\/|$)/i.test(rel)
     || /key|token|secret|credential|password|\.pem$|\.p12$|\.pfx$/.test(name) || name.startsWith('id_');
 }
+
+// ---------- folders a new manager may work in ----------
+// A proposed manager is drafted by an agent, so its folders are checked before the owner sees the card: inside
+// the home folder, not hidden, not Library, and never HQ's own folder or its app (code, settings, private data).
+// Returns what's wrong, or '' when the folder is fine. Check the real path too, so a link can't point past this.
+export function badFolder(abs, { home, hq, app }) {
+  const inside = (p, root) => p === root || p.startsWith(`${root}${path.sep}`);
+  const rel = path.relative(home, abs);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return 'must be a folder inside the home folder';
+  if (rel.split(path.sep).some(p => p.startsWith('.'))) return "can't be a hidden folder";
+  if (/^library(\/|$)/i.test(rel)) return "can't be in Library";
+  if (abs === hq) return "can't be HQ's own folder (a folder inside it is fine)";
+  if (inside(abs, app)) return "can't be HQ's app folder or anything in it";
+  return '';
+}

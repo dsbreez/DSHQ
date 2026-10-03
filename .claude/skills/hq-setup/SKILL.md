@@ -26,8 +26,10 @@ Ask, in one message:
 Write `app/config.json`:
 
 ```json
-{ "name": "Alex", "aboutMe": "about-me.md", "autoFreshTokens": 50000, "outwardTools": [] }
+{ "name": "Alex", "aboutMe": "about-me.md", "autoFreshTokens": 50000, "updateFor": "Sam", "outwardTools": [] }
 ```
+
+Set `updateFor` to who their weekly update goes to (their manager's first name), or leave it out if nobody. It labels the Week Updates tab's draft button.
 
 Fill `outwardTools` from the connector tools you have in this session (names starting `mcp__`): every tool that sends, posts, schedules, shares, or creates or edits something other people see (Slack messages, email, calendar events, Notion pages and the like), by its full name. Leave read-only tools off. HQ blocks these for managers, and for workers until the person approves.
 
@@ -35,7 +37,9 @@ Write `about-me.md` from `about-me.example.md`, filled with their answers. Keep 
 
 ## 3. Their managers
 
-Ask which areas of their work they want a manager for. Two to four is a good start; more can come later. Offer examples like web, content, social, growth, research, ops or engineering. For each manager, ask:
+**General comes first, by default.** Tell them in a sentence: it's the front door they can ask anything; it answers, does quick things itself, and for bigger work asks whether a manager should take it, an open task should continue, a new manager should be created, or it should do it itself. Include it unless they say no. Write it exactly like the first entry in `app/managers.example.json` (`"router": true`, home `~/HQ/general`, no other folders: HQ gives it every other manager's folders by itself). Create `~/HQ/general`. Its `managers/general/ROLE.md` and `DESK.md` come from `examples/managers/general/`: fill **Routing notes** with one line per manager they choose below, and use their name in the "Waiting on" heading.
+
+Then ask which areas of their work they want a manager for. Two to four is a good start; more can come later, and General can propose new ones as work comes in. Offer examples like web, content, social, growth, research, ops or engineering. For each manager, ask:
 
 - What it owns, in a sentence.
 - The folder (or folders) on their computer where that work lives. Check each one exists. If they have none, create `~/<area>`.
@@ -46,7 +50,7 @@ Then write, for each manager:
 - An entry in `app/managers.json`, in the shape of `app/managers.example.json`:
   - `id`: short, lowercase, no spaces, e.g. `content`.
   - `name`: e.g. "Content Manager". `blurb`: one short line.
-  - `icon`: one of globe, chat, chart, sparkle, pen, code, megaphone, briefcase, search, bolt, book, users, star. `color`: a hex colour; each manager gets a different one.
+  - `icon`: one of globe, chat, chart, sparkle, pen, code, megaphone, briefcase, search, bolt, book, users, star, film. `color`: a hex colour; each manager gets a different one.
   - `home`: the main folder. `folders`: the main folder first, then any others.
   - `starters`: three things they'd plausibly ask it first.
   - Optional `network`: the sites this manager's commands may reach, as bare domains like `"api.example.com"` or `"*.example.com"`. Every command runs in Claude Code's sandbox, which blocks everything else. Check the scripts in its folders for the APIs they call (`grep -rhoE "https?://[a-zA-Z0-9.-]+" <folder>`, skipping data files) and list the ones it needs to read data or prepare work. Leave it out if the manager only works on files.
@@ -77,4 +81,4 @@ If HQ was already running, the same command restarts it so the new setup loads.
 
 ## Changing a setup later
 
-To add a manager, do step 3 for just that one and restart HQ. To retire one, remove its entry from `app/managers.json`; leave its folder in `managers/` so its desk isn't lost.
+To add a manager, do step 3 for just that one and restart HQ (and add a line for it to General's Routing notes). Or ask General: it proposes the manager, and once they approve it under To Review, HQ adds it without a restart. To retire one, remove its entry from `app/managers.json`; leave its folder in `managers/` so its desk isn't lost.

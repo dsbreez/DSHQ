@@ -13,6 +13,8 @@ import { Record, monthKey, prevMonth, monthLabel } from './lib/record.js';
 import { Routines } from './lib/routines.js';
 import { parseCall, recordAnswer, parseProjects, setProjectStatus, daySummary } from './lib/dashboard.js';
 import { fromBrowser, privatePath } from './lib/safety.js';
+import { teamFolders, teamRules, checkProposal, managerEntry, deskFor, appendManager } from './lib/team.js';
+import { Updates, WEEK, weekKey, prevWeek, weekLabel, splitLinks, cleanUpdate, asMarkdown } from './lib/updates.js';
 import * as P from './lib/prompts.js';
 
 const APP = path.dirname(fileURLToPath(import.meta.url));
@@ -51,14 +53,25 @@ const domains = (list, where) => (Array.isArray(list) ? list : []).filter(d => {
   return false;
 });
 
-const MANAGERS = readJson(path.join(APP, 'managers.json'), []).map(m => ({
-  ...m, homePath: expand(m.home), folderPaths: m.folders.map(expand),
+// One manager from managers.json. A router ("router": true, like General) answers anything and routes the rest:
+// it works across every manager's folders and carries every manager's blocks (see lib/team.js).
+const toManager = m => ({
+  ...m, router: m.router === true, homePath: expand(m.home), folderPaths: (m.folders || [m.home]).map(expand),
   network: domains(m.network, `${m.id}.network`), approvedNetwork: domains(m.approvedNetwork, `${m.id}.approvedNetwork`),
-}));
+});
+const MANAGERS = readJson(path.join(APP, 'managers.json'), []).map(toManager);
 const byId = Object.fromEntries(MANAGERS.map(m => [m.id, m]));
+// What a manager and its workers can reach, worked out live so a manager approved later counts at once.
+const foldersOf = m => teamFolders(m, MANAGERS);
+const folderList = m => (m.router ? foldersOf(m).map(tilde) : m.folders);
+const blockedOf = m => teamRules(m, MANAGERS, 'blocked');
+const outwardOf = m => teamRules(m, MANAGERS, 'outward');
+const teamView = () => MANAGERS.map(m => ({ id: m.id, name: m.name, blurb: m.blurb, router: m.router, folders: m.folders }));
 
 const store = new Store(path.join(APP, 'data'));
+store.state.proposals ??= []; // new managers waiting for the owner's Approve
 const record = new Record(path.join(HQ, 'record'));
+const updates = new Updates(path.join(HQ, 'record', 'updates'));
 const routines = new Routines({ appDir: APP, record, onChange: () => pushState() });
 const managerDir = id => path.join(HQ, 'managers', id);
 const deskPath = id => path.join(managerDir(id), 'DESK.md');
@@ -73,7 +86,7 @@ if (!/^[0-9a-f]{32}$/.test(SECRET || '')) {
   fs.writeFileSync(SECRET_FILE, JSON.stringify({ id: SECRET }), { mode: 0o600 });
 }
 const hideId = text => String(text ?? '').split(SECRET).join('…');
-P.configure({ owner: OWNER, projectsPath: tilde(projectsPath), secret: SECRET });
+P.configure({ owner: OWNER, projectsPath: tilde(projectsPath), secret: SECRET, updateFor: CONFIG.updateFor });
 const WAITING = P.waitingHeading();
 fs.mkdirSync(path.join(HQ, 'managers'), { recursive: true });
 const INBOX = path.join(HQ, 'inbox');
@@ -116,7 +129,15 @@ function sandbox(m, unlocked = false) {
 }
 
 // Files a review card may preview or open: deliverables inside the managers' folders and HQ.
-const ASSET_ROOTS = [...new Set([HQ, ...MANAGERS.flatMap(m => m.folderPaths)])].map(r => { try { return fs.realpathSync(r); } catch { return r; } });
+const ASSET_ROOTS = [];
+function addAssetRoots(list) {
+  for (const r of list) {
+    let real = r;
+    try { real = fs.realpathSync(r); } catch {}
+    if (!ASSET_ROOTS.includes(real)) ASSET_ROOTS.push(real);
+  }
+}
+addAssetRoots([HQ, ...MANAGERS.flatMap(m => m.folderPaths)]);
 const ASSET_TYPES = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml',
   '.pdf': 'application/pdf', '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm',
@@ -251,13 +272,13 @@ function snapshot() {
     waitingHeading: WAITING,
     calls: open,
     projects: parseProjects(read(projectsPath)).filter(p => ['moving', 'waiting', 'unclear'].includes(p.status)),
-    summary: daySummary({ managers: MANAGERS, calls: open, tasks, upcoming }),
+    summary: daySummary({ managers: MANAGERS, calls: open, tasks, upcoming, proposals: store.state.proposals }),
     managers: MANAGERS.map(m => {
       const desk = read(deskPath(m.id));
       const l = live[m.id];
       const s = store.manager(m.id);
       return {
-        id: m.id, name: m.name, blurb: m.blurb, hue: m.hue, icon: m.icon, color: m.color, home: m.home, folders: m.folders, starters: m.starters || [],
+        id: m.id, name: m.name, blurb: m.blurb, hue: m.hue, icon: m.icon, color: m.color, home: m.home, folders: folderList(m), router: m.router, starters: m.starters || [],
         busy: l.busy, activity: l.activity, queued: l.queue.length, started: !!s.sessionId,
         model: s.model || '', effort: s.effort || '', connectors: s.connectors !== false,
         context: s.sessionId ? s.contextTokens || 0 : 0, autoFresh: AUTO_FRESH_TOKENS,
@@ -266,6 +287,8 @@ function snapshot() {
       };
     }),
     tasks,
+    proposals: store.state.proposals,
+    updates: weekUpdates(),
     feed: buildFeed(),
     upcoming,
     routines: { list: routines.scorecard(), ...routines.status() },
@@ -275,7 +298,8 @@ function snapshot() {
 
 // ---------- managers: one ongoing conversation each ----------
 
-const live = Object.fromEntries(MANAGERS.map(m => [m.id, { busy: false, queue: [], run: null, activity: '', partial: '', stopped: false, fresh: false }]));
+const newLive = () => ({ busy: false, queue: [], run: null, activity: '', partial: '', stopped: false, fresh: false });
+const live = Object.fromEntries(MANAGERS.map(m => [m.id, newLive()]));
 
 const partialTimers = {};
 function emitPartial(id) {
@@ -286,8 +310,9 @@ function emitPartial(id) {
   }, 50);
 }
 
-function pushChat(id, role, text) {
-  const message = { id: crypto.randomUUID(), role, text: hideId(text), at: Date.now() };
+// extra: fields a role needs on screen, like a handoff's sender and title.
+function pushChat(id, role, text, extra = {}) {
+  const message = { id: crypto.randomUUID(), role, text: hideId(text), at: Date.now(), ...extra };
   store.chat(id).push(message);
   store.saveChat(id);
   emit('chat', { manager: id, message });
@@ -367,11 +392,13 @@ function pumpManager(id, retried = false) {
   const desk = read(deskPath(id));
   const role = read(rolePath(id));
   const fresh = !s.sessionId;
+  const team = teamView();
 
   const context = [];
   if (s.updates.length) context.push(`Updates since your last message:\n${s.updates.map(u => `- ${u}`).join('\n')}`);
   if (!fresh && s.roleSeenHash && s.roleSeenHash !== hash(role)) context.push(`Your role file changed. It now reads:\n\n${role}`);
-  if (!fresh && (s.promptVersion || 1) < P.PROMPT_VERSION) context.push(`HQ has new instructions for you:\n\n${P.updatesSince(s.promptVersion || 1)}`);
+  const added = !fresh && (s.promptVersion || 1) < P.PROMPT_VERSION ? P.updatesSince(s.promptVersion || 1, { manager: m, team }) : '';
+  if (added) context.push(`HQ has new instructions for you:\n\n${added}`);
   if (fresh || s.deskSeenHash !== hash(desk)) context.push(`Your desk right now:\n\n${desk}`);
   const prompt = context.length ? `<hq-context id="${SECRET}">\n${context.join('\n\n')}\n</hq-context>\n\n${text}` : text;
   const updatesSent = s.updates;
@@ -395,13 +422,14 @@ function pumpManager(id, retried = false) {
     autocompact: AUTOCOMPACT_TOKENS,
     connectors: s.connectors !== false,
     appendSystemPrompt: P.managerSystem({
-      manager: m, role, deskPath: tilde(deskPath(id)), roleDir: tilde(managerDir(id)), folders: m.folders, aboutOwner: aboutOwner(),
+      manager: m, role, deskPath: tilde(deskPath(id)), roleDir: tilde(managerDir(id)), folders: folderList(m), aboutOwner: aboutOwner(), team,
     }),
-    addDirs: [HQ, ...m.folderPaths.filter(f => f !== m.homePath && fs.existsSync(f))],
+    addDirs: [HQ, ...foldersOf(m).filter(f => f !== m.homePath && fs.existsSync(f))],
     allowed: ['Bash(hq-task *)'],
     // Managers never act outward: they start a worker for it, and only the run you approve is unlocked.
-    disallowed: [...NEVER, ...(m.blocked || []), ...OUTWARD, ...(m.outward || [])],
+    disallowed: [...NEVER, ...blockedOf(m), ...OUTWARD, ...outwardOf(m)],
     settings: sandbox(m),
+    env: { HQ_MANAGER: id },
     onEvent: e => {
       if (e.type === 'system' && e.subtype === 'init') { s.sessionId = e.session_id; store.save(); return; }
       if (e.parent_tool_use_id) return;
@@ -544,7 +572,7 @@ function createTask({ manager, title, brief, folder, from }) {
   if (!brief) throw httpError(400, 'Describe the task first.');
   // A brief can't carry HQ's id: a worker never mistakes a manager's words for HQ's.
   // Files are only brought in for your own tasks: a manager can't use a brief to copy files out of their folder.
-  if (from !== 'manager') brief = bringFilesIn(brief, [INBOX, managerDir(manager), ...m.folderPaths]);
+  if (from !== 'manager') brief = bringFilesIn(brief, [INBOX, managerDir(manager), ...foldersOf(m)]);
   brief = hideId(brief);
   const dir = folder ? expand(folder) : m.homePath;
   if (!dir.startsWith(HOME) || !fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) {
@@ -606,9 +634,10 @@ function startWorker(task) {
     effort: store.manager(m.id).effort || undefined,
     connectors: store.manager(m.id).connectors !== false,
     appendSystemPrompt: P.workerSystem({ manager: m, role: read(rolePath(m.id)), aboutOwner: aboutOwner() }),
-    addDirs: [managerDir(m.id), ...(fs.existsSync(INBOX) ? [INBOX] : []), ...m.folderPaths.filter(f => f !== folder && fs.existsSync(f))],
-    disallowed: [...NEVER, ...(m.blocked || []), ...(unlocked ? [] : [...OUTWARD, ...(m.outward || [])])],
+    addDirs: [managerDir(m.id), ...(fs.existsSync(INBOX) ? [INBOX] : []), ...foldersOf(m).filter(f => f !== folder && fs.existsSync(f))],
+    disallowed: [...NEVER, ...blockedOf(m), ...(unlocked ? [] : [...OUTWARD, ...outwardOf(m)])],
     settings: sandbox(m, unlocked),
+    env: { HQ_MANAGER: m.id, HQ_TASK: String(task.id) },
     onEvent: e => {
       if (e.type === 'system' && e.subtype === 'init') { task.sessionId = e.session_id; store.save(); return; }
       if (e.parent_tool_use_id || e.type !== 'assistant') return;
@@ -820,6 +849,140 @@ function answerCall({ manager, raw, answer, note }) {
   pushState();
 }
 
+// ---------- the team: handoffs and new managers ----------
+
+// Work passed from one manager to another. It shows in the target's chat as a handoff, and HQ sends it on marked as
+// its own, with the brief framed as the sender's words. Agents may call this: nothing leaves the computer.
+function handoff({ from, to, title, brief }) {
+  const a = byId[from];
+  const b = byId[to];
+  const ids = MANAGERS.map(m => m.id).join(', ');
+  if (!a) throw httpError(400, `Which manager is handing this over? Pass --from <your id>, one of ${ids}.`);
+  if (!b) throw httpError(400, `There's no manager "${to}". Use --to with one of ${ids}.`);
+  if (a === b) throw httpError(400, 'That\'s you. Hand it to another manager.');
+  brief = hideId(String(brief || '').trim());
+  if (!brief) throw httpError(400, 'Write the brief on stdin (a heredoc).');
+  if (brief.length > 20000) throw httpError(413, 'Keep the brief under 20,000 characters. Point to files for the rest.');
+  title = hideId(String(title || '').replace(/\s+/g, ' ').trim()) || deriveTitle(brief);
+  if (title.length > 120) throw httpError(400, 'Keep the title under 120 characters.');
+  pushChat(b.id, 'handoff', brief, { from: a.id, fromName: a.name, title });
+  live[b.id].queue.push(P.handedOver({ from: a.name, title, brief }));
+  record.addEvent({ kind: 'handoff', manager: b.id, from: a.id, text: `Handed over from ${a.name}: ${title}` });
+  pumpManager(b.id);
+  pushState();
+  return { to: b.id, name: b.name, title };
+}
+
+const proposalContext = skip => ({
+  managers: MANAGERS, proposals: store.state.proposals.filter(p => p !== skip), home: HOME, hq: HQ, app: APP, clean: hideId,
+  taken: id => fs.existsSync(rolePath(id)) || fs.existsSync(deskPath(id)),
+});
+
+// A new manager, drafted by a manager (General) and checked here. It waits under To Review for the owner.
+function propose(body) {
+  const from = byId[body?.from];
+  if (!from) throw httpError(400, `Which manager is proposing this? Pass "from", one of ${MANAGERS.map(m => m.id).join(', ')}.`);
+  if (store.state.proposals.length >= 10) throw httpError(429, `Ten new managers are already waiting for ${OWNER}. Wait until some are approved or discarded.`);
+  const proposal = { ...checkProposal(body, proposalContext()), from: from.id, at: Date.now() };
+  store.state.proposals.push(proposal);
+  record.addEvent({ kind: 'proposal', manager: from.id, text: `Proposed a new manager: ${proposal.name}` });
+  notify(from.name, `New manager to approve: ${proposal.name}`);
+  store.save();
+  pushState();
+  return proposal;
+}
+
+// A manager approved while HQ runs: everything that knows the team learns about it, no restart needed.
+// New managers get no network and no blocks of their own; the owner adds those in managers.json.
+function addManager(entry) {
+  const m = toManager(entry);
+  MANAGERS.push(m);
+  byId[m.id] = m;
+  live[m.id] = newLive();
+  addAssetRoots(m.folderPaths);
+  return m;
+}
+
+// Owner only. Checks the proposal again, then writes managers.json, ROLE.md and DESK.md and adds the manager live.
+function approveProposal(id) {
+  const proposal = store.state.proposals.find(p => p.id === id);
+  if (!proposal) throw httpError(404, 'That proposal is gone. Have another look.');
+  const p = checkProposal(proposal, proposalContext(proposal)); // folders or the team may have changed since
+  const by = byId[proposal.from];
+  fs.mkdirSync(expand(p.home), { recursive: true });
+  const entry = managerEntry(p);
+  appendManager(path.join(APP, 'managers.json'), entry);
+  fs.mkdirSync(managerDir(p.id), { recursive: true });
+  fs.writeFileSync(rolePath(p.id), `${p.role.trim()}\n`);
+  fs.writeFileSync(deskPath(p.id), deskFor({
+    name: p.name, waiting: WAITING, firstSteps: p.firstSteps,
+    note: `Created ${new Date().toISOString().slice(0, 10)}${by ? ` from ${by.name}'s proposal` : ''}.`,
+  }));
+  addManager(entry);
+  store.state.proposals = store.state.proposals.filter(x => x !== proposal);
+  record.addEvent({ kind: 'system', manager: p.id, text: `New manager: ${p.name}` });
+  store.save();
+  pushState();
+  if (by && p.handoff) handoff({ from: by.id, to: p.id, ...p.handoff });
+  if (by) {
+    pushChat(by.id, 'note', `${OWNER} approved ${p.name}. Created it${p.handoff && by ? ` and handed over "${p.handoff.title}"` : ''}.`);
+    live[by.id].queue.push(P.managerCreated({ name: p.name, id: p.id, title: p.handoff?.title }));
+    pumpManager(by.id);
+  }
+  return { id: p.id, name: p.name };
+}
+
+function discardProposal(id) {
+  const proposal = store.state.proposals.find(p => p.id === id);
+  if (!proposal) throw httpError(404, 'That proposal is gone. Have another look.');
+  store.state.proposals = store.state.proposals.filter(x => x !== proposal);
+  if (byId[proposal.from]) {
+    const s = store.manager(proposal.from);
+    s.updates.push(`${OWNER} discarded the new manager you proposed, ${proposal.name}.${proposal.handoff ? ` "${proposal.handoff.title}" wasn't handed over.` : ''}`);
+    s.updates = s.updates.slice(-20);
+  }
+  record.addEvent({ kind: 'proposal', manager: proposal.from, text: `Discarded the proposed manager ${proposal.name}` });
+  store.save();
+  pushState();
+}
+
+// ---------- week updates ----------
+
+const updateCtx = { home: HOME, clean: hideId, privatePath };
+
+function weekView(key) {
+  const entries = updates.week(key);
+  return { key, label: weekLabel(key), path: tilde(updates.file(key)), entries, markdown: asMarkdown(entries, MANAGERS, key) };
+}
+const weekUpdates = () => ({ for: CONFIG.updateFor || '', weeks: [weekView(weekKey()), weekView(prevWeek(weekKey()))] });
+
+// From a manager (hq-task update) or from the owner's window (Add to week updates on a task).
+function fileUpdate(body) {
+  const taskId = body.task ?? body.taskId;
+  const hasTask = taskId != null && taskId !== '';
+  const task = hasTask ? store.task(taskId) : null;
+  if (hasTask && !task) throw httpError(400, `There's no task #${taskId}.`);
+  const manager = byId[body.manager]?.id || task?.manager;
+  if (!manager) throw httpError(400, 'Which manager is this from? Pass --manager <id>.');
+  const fields = cleanUpdate(body.text != null ? { title: body.title, ...splitLinks(body.text) } : body, updateCtx);
+  const entry = updates.add({ manager, ...fields, taskId: task?.id ?? null });
+  record.addEvent({ kind: 'update', manager, text: `Added to week updates: ${entry.title}` });
+  pushState();
+  return entry;
+}
+
+function editUpdate(id, body) {
+  const entry = updates.edit(id, cleanUpdate(body, updateCtx));
+  if (!entry) throw httpError(404, 'That update is gone. Have another look.');
+  pushState();
+  return entry;
+}
+
+function deleteUpdate(id) {
+  if (!updates.remove(id)) throw httpError(404, 'That update is gone. Have another look.');
+  pushState();
+}
+
 function setProject(num, status) {
   const text = read(projectsPath);
   const updated = setProjectStatus(text, num, status);
@@ -837,7 +1000,7 @@ function closeMonth(key) {
     const n = k => (sec[k] || []).length;
     return { name: m.name, summary: `${n('Working on')} working on, ${n(WAITING)} waiting on you, ${n('Next')} next, ${n('Parked')} parked` };
   });
-  const file = record.writeReview(key, { managers: MANAGERS, scorecard: routines.scorecard(key), desks });
+  const file = record.writeReview(key, { managers: MANAGERS, scorecard: routines.scorecard(key), desks, updates: updates.month(key) });
   record.addEvent({ kind: 'system', text: `${monthLabel(key)} closed. Review written` });
   pushState();
   return { path: tilde(file), text: read(file) };
@@ -860,6 +1023,8 @@ function ownerOnly(method, area, id, action) {
   if (area === 'projects') return action === 'status';
   if (area === 'review') return id === 'close';
   if (area === 'runs') return action === 'verdict';
+  if (area === 'proposals') return !!(id && action); // approve or discard a new manager
+  if (area === 'updates') return !!id; // edit or delete a week update; filing one is open to managers
   return false;
 }
 
@@ -923,6 +1088,25 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    // Agent-callable: hand work to another manager, or propose a new one. Neither leaves the computer.
+    if (area === 'handoff' && !id && req.method === 'POST') return send(res, 200, handoff(await readBody(req)));
+    if (area === 'managers' && id === 'propose' && !action && req.method === 'POST') return send(res, 200, propose(await readBody(req)));
+    if (area === 'proposals' && id && req.method === 'POST') {
+      if (action === 'approve') return send(res, 200, approveProposal(id));
+      if (action === 'discard') { discardProposal(id); return send(res, 200, { ok: true }); }
+    }
+
+    if (area === 'updates') {
+      if (!id && req.method === 'GET') {
+        const week = url.searchParams.get('week') || weekKey();
+        if (!WEEK.test(week)) throw httpError(400, 'A week looks like 2026-W40.');
+        return send(res, 200, weekView(week));
+      }
+      if (!id && req.method === 'POST') return send(res, 200, fileUpdate(await readBody(req)));
+      if (id && req.method === 'PUT') return send(res, 200, editUpdate(id, await readBody(req)));
+      if (id && req.method === 'DELETE') { deleteUpdate(id); return send(res, 200, { ok: true }); }
+    }
+
     if (area === 'managers' && byId[id]) {
       if (action === 'chat' && req.method === 'GET') {
         const l = live[id];
@@ -932,7 +1116,7 @@ const server = http.createServer(async (req, res) => {
         const { text } = await readBody(req);
         if (!String(text || '').trim()) throw httpError(400, 'Type a message first.');
         const m = byId[id];
-        sendToManager(id, bringFilesIn(String(text).trim(), [HQ, ...m.folderPaths]), String(text).trim());
+        sendToManager(id, bringFilesIn(String(text).trim(), [HQ, ...foldersOf(m)]), String(text).trim());
         return send(res, 200, { ok: true });
       }
       if (action === 'stop' && req.method === 'POST') { stopManager(id); return send(res, 200, { ok: true }); }

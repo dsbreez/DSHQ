@@ -1,10 +1,20 @@
 #!/usr/bin/env node
-// hq-task: how managers hand work to background workers through the HQ app.
+// hq-task: how managers hand work to background workers, and to each other, through the HQ app.
 //   hq-task new --manager web --title "Short title" [--folder ~/website] <<'EOF'
 //   the brief
 //   EOF
 //   hq-task list [--manager web]
 //   hq-task show <id>
+//   hq-task handoff --to social --title "Short title" <<'EOF'   (to another manager's chat)
+//   the brief
+//   EOF
+//   hq-task propose-manager <<'EOF'   (a new manager, as JSON; it waits for the owner's Approve)
+//   {"id": "...", "name": "...", ...}
+//   EOF
+//   hq-task update --title "The outcome" [--task 12] <<'EOF'   (an entry in the owner's week updates)
+//   one to three lines, then any links on their own lines
+//   EOF
+// HQ sets HQ_MANAGER (and HQ_TASK for workers) on every run, so it knows who's calling. --from overrides it elsewhere.
 
 import http from 'node:http';
 
@@ -70,6 +80,8 @@ async function readStdin() {
   return data;
 }
 
+const FROM = process.env.HQ_MANAGER || flags.from || flags.manager;
+
 const STATUS = { queued: 'queued', working: 'working', review: 'needs review', done: 'done', failed: 'failed', stopped: 'stopped', interrupted: 'interrupted' };
 
 if (cmd === 'new') {
@@ -96,7 +108,27 @@ if (cmd === 'new') {
   console.log(`#${task.id} ${task.title}\nStatus: ${STATUS[task.status] || task.status}\nFolder: ${task.folder}\n\nBrief:\n${task.brief}\n`);
   if (task.report) console.log(`Report:\n${task.report}`);
   if (task.error) console.log(`Error: ${task.error}`);
+} else if (cmd === 'handoff') {
+  const brief = (flags.brief || '') + (await readStdin());
+  if (!flags.to) fail('Pass --to <manager id>');
+  if (!brief.trim()) fail('Pass the brief on stdin (a heredoc)');
+  const done = await api('/handoff', { method: 'POST', body: JSON.stringify({ from: FROM, to: flags.to, title: flags.title, brief }) });
+  console.log(`Handed "${done.title}" to ${done.name}. It's in their chat now, and they're picking it up.`);
+} else if (cmd === 'propose-manager') {
+  const raw = await readStdin();
+  let body;
+  try { body = JSON.parse(raw); } catch (err) { fail(`The proposal isn't valid JSON (${err.message}). Pass one JSON object on stdin.`); }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) fail('Pass one JSON object on stdin.');
+  const p = await api('/managers/propose', { method: 'POST', body: JSON.stringify({ ...body, from: FROM || body.from }) });
+  console.log(`Proposed ${p.name} (${p.id}). It waits under To Review until it's approved or discarded.`);
+} else if (cmd === 'update') {
+  const text = (flags.summary || '') + (await readStdin());
+  if (!flags.title) fail('Pass --title "The outcome, in a few words"');
+  const task = flags.task || process.env.HQ_TASK || '';
+  const entry = await api('/updates', { method: 'POST', body: JSON.stringify({ manager: FROM, title: flags.title, task, text }) });
+  console.log(`Added "${entry.title}" to week updates (${entry.week}).`);
 } else {
-  console.log('Usage: hq-task new --manager <id> --title "..." [--folder <path>] <<EOF brief EOF | hq-task list [--manager <id>] | hq-task show <id>');
+  console.log('Usage: hq-task new --manager <id> --title "..." [--folder <path>] <<EOF brief EOF | hq-task list [--manager <id>] | hq-task show <id>'
+    + ' | hq-task handoff --to <id> --title "..." <<EOF brief EOF | hq-task propose-manager <<EOF {json} EOF | hq-task update --title "..." [--task <id>] <<EOF summary EOF');
   process.exit(cmd ? 1 : 0);
 }

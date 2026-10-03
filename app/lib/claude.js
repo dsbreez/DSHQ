@@ -9,8 +9,8 @@ const HOME = os.homedir();
 const CLAUDE = process.env.HQ_CLAUDE_BIN || (fs.existsSync(path.join(HOME, '.local/bin/claude')) ? path.join(HOME, '.local/bin/claude') : 'claude');
 const APP_BIN = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'bin');
 
-function childEnv() {
-  const env = { ...process.env };
+function childEnv(vars = {}) {
+  const env = { ...process.env, ...vars };
   // Don't let a parent Claude Code session leak into the children.
   for (const key of Object.keys(env)) {
     if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) delete env[key];
@@ -20,7 +20,8 @@ function childEnv() {
   return env;
 }
 
-export function runClaude({ cwd, prompt, sessionId, resume, name, appendSystemPrompt, addDirs = [], allowed = [], disallowed = [], settings, partial = false, model, effort, autocompact, connectors = true, onEvent, onExit }) {
+// env: extra variables for this run, such as HQ_MANAGER, which tells hq-task which manager is calling.
+export function runClaude({ cwd, prompt, sessionId, resume, name, appendSystemPrompt, addDirs = [], allowed = [], disallowed = [], settings, partial = false, model, effort, autocompact, connectors = true, env, onEvent, onExit }) {
   const args = ['-p', '--output-format', 'stream-json', '--verbose', '--permission-mode', 'auto', '--permission-prompts', 'none'];
   if (resume) args.push('--resume', resume);
   else if (sessionId) args.push('--session-id', sessionId);
@@ -37,7 +38,7 @@ export function runClaude({ cwd, prompt, sessionId, resume, name, appendSystemPr
   // Settings for this run only, such as the Bash sandbox. Claude Code merges them over the user's own.
   if (settings) args.push('--settings', JSON.stringify(settings));
 
-  const proc = spawn(CLAUDE, args, { cwd, env: childEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+  const proc = spawn(CLAUDE, args, { cwd, env: childEnv(env), stdio: ['pipe', 'pipe', 'pipe'] });
   let buf = '';
   let stderr = '';
   let result = null;
@@ -102,6 +103,9 @@ export function describeTool(name, input = {}) {
     case 'NotebookEdit': return `Editing ${base(input.notebook_path)}`;
     case 'Bash':
       if (/\bhq-task\s+new\b/.test(input.command || '')) return 'Starting a worker';
+      if (/\bhq-task\s+handoff\b/.test(input.command || '')) return 'Handing over to another manager';
+      if (/\bhq-task\s+propose-manager\b/.test(input.command || '')) return 'Proposing a new manager';
+      if (/\bhq-task\s+update\b/.test(input.command || '')) return 'Adding to week updates';
       return clip(input.description || `Running ${input.command}`);
     case 'Grep': return `Searching for “${clip(input.pattern, 40)}”`;
     case 'Glob': return `Looking for ${clip(input.pattern, 50)}`;

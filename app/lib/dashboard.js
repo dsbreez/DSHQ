@@ -112,8 +112,9 @@ const word = n => (n <= 10 ? WORDS[n] : String(n));
 const lower = n => word(n).toLowerCase();
 const short = name => name.replace(/ (Manager|Designer)$/, '').replace(/ Media$/, '');
 
-export function daySummary({ managers, calls, tasks, upcoming }) {
-  const review = tasks.filter(t => t.status === 'review');
+// proposals: new managers waiting for approval. Each counts as a review for the manager that proposed it.
+export function daySummary({ managers, calls, tasks, upcoming, proposals = [] }) {
+  const review = [...tasks.filter(t => t.status === 'review'), ...proposals.map(p => ({ manager: p.from }))];
   const trouble = tasks.filter(t => ['failed', 'interrupted', 'stopped'].includes(t.status));
   const working = tasks.filter(t => t.status === 'working');
   const total = calls.length + review.length + trouble.length;

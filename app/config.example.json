@@ -2,5 +2,6 @@
   "name": "Alex",
   "aboutMe": "about-me.md",
   "autoFreshTokens": 50000,
+  "updateFor": "your manager",
   "outwardTools": ["mcp__claude_ai_Acme_Mail__send_email", "mcp__claude_ai_Acme_Mail__share_folder"]
 }

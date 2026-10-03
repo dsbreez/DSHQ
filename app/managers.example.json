@@ -1,5 +1,17 @@
 [
   {
+    "id": "general",
+    "name": "General",
+    "blurb": "Ask anything; it routes the rest",
+    "router": true,
+    "icon": "bolt",
+    "color": "#AF52DE",
+    "home": "~/HQ/general",
+    "folders": ["~/HQ/general"],
+    "starters": ["What's on across the team?", "Who should take this month's newsletter?", "Find the latest launch draft"],
+    "network": []
+  },
+  {
     "id": "content",
     "name": "Content Manager",
     "blurb": "Posts, newsletters and launch copy",

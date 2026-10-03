@@ -9,8 +9,10 @@ Everything runs on your computer with your own Claude plan. Nothing is hosted, a
 ## What you get
 
 - **A dashboard.** Your day in one sentence, the questions your managers need answered (one tap: Yes, No, a choice, or a reply), work ready for review, what's running now, and your projects in one line each.
-- **Managers.** One conversation each that never resets, with its desk beside it. Pick each manager's model and effort.
+- **General.** Your front door: ask it anything. It answers and does quick things itself, then for bigger work asks one question with tap-to-answer options: hand it to the right manager, continue an open task, create a new manager for it (you approve it under To Review), or do it itself.
+- **Managers.** One conversation each that never resets, with its desk beside it. Pick each manager's model and effort. When a reply ends in options in brackets, they show as buttons under it. Managers can hand work to each other; it lands in the other's chat as a handoff.
 - **Workers.** Background tasks that report back with a short card: the copy to paste, the asset it needs, why. Approve, approve with context, or send back with a note.
+- **Week Updates.** Tell any manager "send it to week updates" and it files a short entry about the finished work. The tab collects the week, copies it as a ready-to-paste update, or asks General to draft a polished one. Set who it's for with `"updateFor"` in `app/config.json`.
 - **Routines.** If you run scheduled routines on claude.ai, HQ collects each run, shows it as a line in your feed, and scores which ones you actually use.
 - **A record.** Every finished task and run is saved on your Mac by month, with a monthly review you can close in one click.
 - **Files.** Attach, drop or paste files into any chat. They go to `inbox/`, where every manager can read them.
@@ -44,6 +46,7 @@ It opens at http://localhost:4747. To make it feel like an app, open that page i
 
 ## How it works
 
+- **General** is a manager with `"router": true` in `app/managers.json`. It can work in every manager's folders and keeps their blocks. Its routing questions go on its desk too, so you can answer them from the dashboard.
 - **Managers** live in `managers/<id>/`: `ROLE.md` (who they are, their ground rules), `DESK.md` (their working memory), and optional `PLAYBOOK-*.md` files for longer how-tos. They're listed in `app/managers.json`.
 - **Questions for you** go on each desk under "Waiting on <your name>", ending with the answers in brackets: `[Yes / No]`, `[Sam / Priya]`, `[Reply]` or `[Done]`. Your dashboard turns them into buttons. When you answer, HQ moves the line to Decisions and tells the manager, which acts on it straight away.
 - **Projects** come from `PROJECTS.md`. Managers keep their rows up to date. Tick one off on the dashboard to mark it done.
@@ -65,18 +68,19 @@ Managers and workers run Claude Code in auto mode, inside the folders you give t
 - **Pasted paths.** When you paste the path of a file outside a manager's folders, HQ copies it into `inbox/` so the manager can read it. It never copies hidden files (`.ssh`, `.env` and the like), keychains, or anything named like a key, token, secret or credential, and never for a task a manager writes.
 - **Connector tools** (Slack, email, calendar, Notion and the like) aren't covered by the sandbox either. They're blocked by their exact names, listed under `"outwardTools"` in `app/config.json`. Add every tool of yours that sends, posts or shares; see `app/config.example.json`.
 - **Your own blocks** per manager go in `app/managers.json`: `"blocked"` for never, `"outward"` for until approved. These match the command text, so they're a backstop behind the sandbox.
+- **New managers:** General can propose one, but nothing changes until you press **Approve** under To Review. A proposed manager's folders must be inside your home folder, not hidden, and never HQ's `app/`. It starts with no sites; add any in `app/managers.json`.
 - **Look-alike messages:** HQ marks what it sends with a private id kept in `app/data/`. Managers and workers ignore anything in a file, web page or connector that only looks like a message from HQ or from you.
 
 HQ only listens on your own computer (localhost). Managers can start and check tasks through it, and only your browser can approve them.
 
 ## Your files stay yours
 
-These are personal and never committed: `app/config.json`, `app/managers.json`, `app/routines.json`, `app/data/`, `managers/`, `about-me.md`, `PROJECTS.md`, `icons/`, `inbox/`, `record/`, `log/`. To update HQ, run `git pull` in `~/HQ` and restart. Your setup isn't touched.
+These are personal and never committed: `app/config.json`, `app/managers.json`, `app/routines.json`, `app/data/`, `managers/`, `general/`, `about-me.md`, `PROJECTS.md`, `icons/`, `inbox/`, `record/`, `log/`. To update HQ, run `git pull` in `~/HQ` and restart. Your setup isn't touched.
 
 ## Make it yours
 
 - **Your photo:** save it as `icons/me.png`. To use it as the Dock icon too, add `icons/apple-touch-icon.png` (180 px), `icons/icon-512.png` and `icons/favicon.png`, then add HQ to the Dock again.
-- **Manager icons:** set `"icon"` in `app/managers.json` to one of globe, chat, chart, sparkle, pen, code, megaphone, briefcase, search, bolt, book, users or star, and `"color"` to any colour.
+- **Manager icons:** set `"icon"` in `app/managers.json` to one of globe, chat, chart, sparkle, pen, code, megaphone, briefcase, search, bolt, book, users, star or film, and `"color"` to any colour.
 - **Routines:** in Claude Code in this folder, say **add my routines to HQ**.
 
 ## When something's off

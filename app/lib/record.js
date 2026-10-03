@@ -114,7 +114,8 @@ export class Record {
     try { return fs.readdirSync(this.root).filter(k => /^\d{4}-\d{2}$/.test(k) && this.isClosed(k)).sort().reverse(); } catch { return []; }
   }
 
-  writeReview(key, { managers, scorecard, desks }) {
+  // updates: the month's week updates, as [{ label, entries }] (see Updates.month in updates.js).
+  writeReview(key, { managers, scorecard, desks, updates = [] }) {
     const tasks = this.monthTasks(key);
     const lines = [`# ${monthLabel(key)} review`, '', `Written by HQ on ${stamp(Date.now())}. Everything behind it is in this folder.`, ''];
     lines.push('## What got done', '');
@@ -126,6 +127,15 @@ export class Record {
     }
     const discarded = tasks.filter(t => t.outcome === 'Discarded');
     if (discarded.length) lines.push(`Discarded: ${discarded.map(t => `#${t.id} ${t.title}`).join(', ')}`, '');
+
+    if (updates.length) {
+      lines.push('## Week updates', '');
+      for (const w of updates) {
+        lines.push(`**${w.label}**`);
+        for (const e of w.entries) lines.push(`- ${managers.find(m => m.id === e.manager)?.name || e.manager}: ${e.title}${e.summary ? `. ${e.summary.split('\n')[0]}` : ''}`);
+        lines.push('');
+      }
+    }
 
     lines.push('## Routines', '', '| Routine | Runs | Opened | Replied | Useful | Noise | Suggestion |', '|---|---|---|---|---|---|---|');
     for (const r of scorecard) {
